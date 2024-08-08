@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::server::WebPkiClientVerifier;
-use rustls::{RootCertStore, ServerConfig};
+use rustls::RootCertStore;
 use rustls_pemfile::private_key;
 use tokio_rustls::rustls::client::danger::ServerCertVerifier;
 use tokio_rustls::rustls::client::WebPkiServerVerifier;
@@ -51,12 +51,12 @@ impl Store {
         cert_chain: Vec<CertificateDer<'static>>,
         key_der: PrivateKeyDer<'static>,
         // cert_resolver: Arc<dyn ResolvesServerCert>,
-    ) -> anyhow::Result<Arc<ServerConfig>> {
+    ) -> anyhow::Result<Arc<rustls::ServerConfig>> {
         let client_cert_verifier = WebPkiClientVerifier::builder(roots)
             .allow_unauthenticated()
             .build()?;
 
-        let config = ServerConfig::builder()
+        let config = rustls::ServerConfig::builder()
             .with_client_cert_verifier(client_cert_verifier)
             .with_single_cert(cert_chain, key_der)?;
         // .with_cert_resolver(cert_resolver);

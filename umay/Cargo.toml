@@ -15,7 +15,7 @@ rustls-pemfile = "2.1"
 rustls-webpki = "0.102"
 webpki = "0.22.4"
 rcgen = "0.13.1"
-tower = "0.4"
+tower = { version = "0.4", features = ["full"] }
 hyper = { version = "1.4", features = ["full"] }
 hyper-util = "0.1"
 http = "1.1.0"
@@ -34,9 +34,17 @@ jemallocator = "0.5"
 tracing = "0.1"
 anyhow = "1.0.86"
 thiserror = "1.0"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+arc-swap = "1.7.1"
+rand = "0.8.5"
+tokio-tungstenite = "0.23.1"
 
 
+[lib]
+name = "umay"
+path = "src/lib.rs"
 
 [[bin]]
 name = "umay"
 path = "src/main.rs"
+

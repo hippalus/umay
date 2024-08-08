@@ -1,3 +1,4 @@
+use once_cell::sync::Lazy;
 use rcgen::{
     Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
     KeyUsagePurpose, SerialNumber,
@@ -5,6 +6,8 @@ use rcgen::{
 use rustls::pki_types::PrivatePkcs8KeyDer;
 use rustls::{RootCertStore, ServerConfig};
 use std::sync::Arc;
+
+pub static TEST_PKI: Lazy<Arc<TestPki>> = Lazy::new(|| Arc::new(TestPki::default()));
 
 pub struct TestPki {
     pub roots: Arc<RootCertStore>,
@@ -55,6 +58,7 @@ impl TestPki {
         let mut params = CertificateParams::new(vec!["localhost".to_string()]).unwrap();
         params.is_ca = IsCa::NoCa;
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+
         let key_pair = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
         let cert = params.signed_by(&key_pair, ca_cert, ca_key).unwrap();
         (cert, key_pair)
@@ -68,6 +72,7 @@ impl TestPki {
         params.is_ca = IsCa::NoCa;
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
         params.serial_number = Some(SerialNumber::from(vec![0xC0, 0xFF, 0xEE]));
+
         let key_pair = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
         let cert = params.signed_by(&key_pair, ca_cert, ca_key).unwrap();
         (cert, key_pair)

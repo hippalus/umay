@@ -1,20 +1,24 @@
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+extern crate alloc;
 
+use std::net::SocketAddr;
+
+use crate::app::server::Server;
 use tokio::runtime::Builder;
-use tokio::sync::mpsc;
-
-use crate::proxy::ProxyServer;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
+use crate::tls::pki::TEST_PKI;
 
 #[global_allocator]
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
-mod credentials;
+mod app;
+mod balance;
 mod proxy;
-mod test;
 mod tls;
 
 fn main() -> anyhow::Result<()> {
+    init_logger(LevelFilter::DEBUG);
+
     let runtime = Builder::new_multi_thread()
         .enable_all()
         .thread_name("umay")
@@ -23,13 +27,32 @@ fn main() -> anyhow::Result<()> {
         .build()
         .expect("failed to build runtime!");
 
-    let _guard = runtime.enter();
-    let _ = runtime.block_on(async {
-        let (shutdown_tx, shutdown_rx) = mpsc::unbounded_channel();
-        let shutdown_signal = Arc::new(AtomicBool::new(false));
-        let server = ProxyServer::new(shutdown_signal.clone(), shutdown_tx);
+    let listen_addr: SocketAddr = "0.0.0.0:8883".parse()?;
+    let upstream_host = "localhost".to_string();
+    let upstream_port = 1883;
 
-        server.run("0.0.0.0:8883", "0.0.0.0:1883").await
-    });
-    Ok(())
+    let server = Server::new(
+        listen_addr,
+        upstream_host,
+        upstream_port,
+        TEST_PKI.server_config(),
+    )?;
+
+    runtime.block_on(server.run())
+}
+
+fn init_logger(default_level: LevelFilter) {
+    let filter_layer = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(default_level.to_string()));
+
+    let fmt_layer = fmt::layer()
+        .with_thread_names(true)
+        .with_thread_ids(true)
+        .with_line_number(true)
+        .compact();
+
+    Registry::default()
+        .with(filter_layer)
+        .with(fmt_layer)
+        .init();
 }
