@@ -1,5 +1,6 @@
 use crate::balance::{Backend, LoadBalancer};
-use crate::tls::{Server as TlsServer, ServerTls};
+use crate::tls::server::{Server, TlsTerminator};
+use crate::tls::ServerTls;
 use anyhow::Result;
 use futures::future::BoxFuture;
 use std::sync::Arc;
@@ -7,40 +8,45 @@ use std::task::Poll;
 use tokio::net::TcpStream;
 use tokio_rustls::server::TlsStream;
 use tower::Service;
-use tracing::info;
+use tracing::{debug, error, info};
 
 pub struct ProxyService {
-    tls_terminator: TlsServer,
+    tls_server: Arc<Server>,
     load_balancer: Arc<LoadBalancer>,
 }
 
 impl ProxyService {
-    pub fn new(tls_terminator: TlsServer, load_balancer: Arc<LoadBalancer>) -> Self {
+    pub fn new(tls_server: Arc<Server>, load_balancer: Arc<LoadBalancer>) -> Self {
         Self {
-            tls_terminator,
+            tls_server,
             load_balancer,
         }
     }
 
     async fn handle_connection(&self, client: TcpStream) -> Result<()> {
-        let (server_tls, tls_stream) = self.tls_terminator.clone().call(client).await?;
+        let (server_tls, tls_stream) = self.tls_server.terminate(client).await?;
 
-        if let ServerTls::Established {
-            client_id,
-            negotiated_protocol,
-        } = server_tls
-        {
-            info!(
-                ?client_id,
-                ?negotiated_protocol,
-                "TLS connection established"
-            );
+        match server_tls {
+            ServerTls::Established {
+                client_id,
+                negotiated_protocol,
+            } => {
+                info!(
+                    "Established TLS connection: {:?} {:?}",
+                    client_id, negotiated_protocol
+                );
+            }
+            ServerTls::Passthru { sni } => {
+                info!("Passthrough connection with SNI: {:?}", sni);
+            }
         }
 
-        if let Some(backend) = self.load_balancer.select(None).await {
-            self.proxy(tls_stream, backend).await?;
-        } else {
-            return Err(anyhow::anyhow!("No backend available"));
+        match self.load_balancer.select(None).await {
+            Some(backend) => {
+                debug!("Selected backend: {:?}", backend);
+                self.proxy(tls_stream, backend).await?;
+            }
+            None => return Err(anyhow::anyhow!("No backends available")),
         }
 
         Ok(())
@@ -58,12 +64,12 @@ impl ProxyService {
         tokio::select! {
             result = client_to_server => {
                 if let Err(e) = result {
-                    tracing::error!("Error in client to server communication: {:?}", e);
+                    error!("Error in client to server communication: {:?}", e);
                 }
             }
             result = server_to_client => {
                 if let Err(e) = result {
-                    tracing::error!("Error in server to client communication: {:?}", e);
+                    error!("Error in server to client communication: {:?}", e);
                 }
             }
         }
@@ -94,7 +100,7 @@ impl Service<TcpStream> for ProxyService {
 impl Clone for ProxyService {
     fn clone(&self) -> Self {
         Self {
-            tls_terminator: self.tls_terminator.clone(),
+            tls_server: Arc::clone(&self.tls_server),
             load_balancer: Arc::clone(&self.load_balancer),
         }
     }

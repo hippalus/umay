@@ -46,13 +46,15 @@ pub struct LocalDiscovery {
     backends: ArcSwap<BTreeSet<Backend>>,
 }
 
-impl LocalDiscovery {
-    pub fn new() -> Self {
+impl Default for LocalDiscovery {
+    fn default() -> Self {
         Self {
             backends: ArcSwap::from_pointee(BTreeSet::new()),
         }
     }
+}
 
+impl LocalDiscovery {
     pub fn with_backends(backends: Vec<SocketAddr>) -> Self {
         let backends = backends
             .into_iter()

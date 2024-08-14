@@ -9,6 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio_rustls::TlsConnector;
+use umay::app::config::AppConfig;
 use umay::app::server::Server;
 use umay::tls::pki::TestPki;
 
@@ -73,24 +74,27 @@ async fn start_client(
 
 #[tokio::test]
 async fn test_proxy_integration() -> anyhow::Result<()> {
-    let upstream_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 1883);
+    std::env::set_var(
+        "CONFIG_BASE_PATH",
+        "/Users/hakanisler/Workspace/Github/hippalus/umay/config/",
+    );
+    let upstream_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 1994);
+    let proxy_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 9994);
+
     let (backend_shutdown_tx, backend_shutdown_rx) = oneshot::channel();
     let upstream_handle = tokio::spawn(start_backend(upstream_addr, backend_shutdown_rx));
 
-    let proxy_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 8883);
-    let server = Server::new(
-        proxy_addr,
-        upstream_addr.ip().to_string(),
-        upstream_addr.port(),
-        TEST_PKI.server_config(),
-    )?;
+    let config = Arc::new(AppConfig::new()?);
 
+    let server = Server::build(config.clone())?;
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let server_handle = tokio::spawn(async move {
-        if let Err(e) = server.run().await {
+        if let Err(e) = server.spawn(shutdown_rx).await {
             tracing::error!("Server error: {:?}", e);
         }
     });
 
+    // Allow some time for the servers to start
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     let mut client_stream = start_client(proxy_addr).await?;
@@ -107,11 +111,16 @@ async fn test_proxy_integration() -> anyhow::Result<()> {
     );
     tracing::info!("Client received: {:?}", String::from_utf8_lossy(&buf[..n]));
 
+    // Shutdown backend and proxy servers
     backend_shutdown_tx
         .send(())
         .expect("Failed to send backend shutdown signal");
-    server_handle.abort();
+    shutdown_tx
+        .send(())
+        .expect("Failed to send shutdown signal");
+    server_handle.await?;
 
+    // Wait for the backend server to complete
     tokio::time::timeout(Duration::from_secs(10), upstream_handle)
         .await??
         .expect("Failed to complete upstream_handle");

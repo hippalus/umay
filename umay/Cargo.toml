@@ -38,7 +38,10 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 arc-swap = "1.7.1"
 rand = "0.8.5"
 tokio-tungstenite = "0.23.1"
-
+config = "0.14.0"
+drain = "0.1.2"
+base64 = "0.22.1"
+rustls-native-certs = "0.7.1"
 
 [lib]
 name = "umay"

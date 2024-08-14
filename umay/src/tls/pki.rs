@@ -1,13 +1,14 @@
-use once_cell::sync::Lazy;
 use rcgen::{
     Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
     KeyUsagePurpose, SerialNumber,
 };
 use rustls::pki_types::PrivatePkcs8KeyDer;
 use rustls::{RootCertStore, ServerConfig};
+use std::fs;
+use std::fs::File;
+use std::io::Write;
+use std::path::Path;
 use std::sync::Arc;
-
-pub static TEST_PKI: Lazy<Arc<TestPki>> = Lazy::new(|| Arc::new(TestPki::default()));
 
 pub struct TestPki {
     pub roots: Arc<RootCertStore>,
@@ -84,6 +85,54 @@ impl TestPki {
         roots
     }
 
+    pub fn write_certs_and_keys(&self, directory: &str) -> anyhow::Result<()> {
+        fs::create_dir_all(directory)?;
+
+        self.write_cert_and_key(directory, "ca", &self.ca_cert.0, &self.ca_cert.1)?;
+        self.write_cert_and_key(
+            directory,
+            "server",
+            &self.server_cert.0,
+            &self.server_cert.1,
+        )?;
+        self.write_cert_and_key(
+            directory,
+            "client",
+            &self.client_cert.0,
+            &self.client_cert.1,
+        )?;
+
+        self.write_full_chain(directory)?;
+
+        Ok(())
+    }
+
+    fn write_cert_and_key(
+        &self,
+        directory: &str,
+        prefix: &str,
+        cert: &Certificate,
+        key: &KeyPair,
+    ) -> std::io::Result<()> {
+        let cert_path = Path::new(directory).join(format!("{}.crt", prefix));
+        let key_path = Path::new(directory).join(format!("{}.key", prefix));
+
+        fs::write(cert_path, cert.der())?;
+        fs::write(key_path, key.serialize_pem())?;
+
+        Ok(())
+    }
+
+    fn write_full_chain(&self, directory: &str) -> anyhow::Result<()> {
+        let chain_path = Path::new(directory).join("ca-chain.pem");
+        let mut file = File::create(chain_path)?;
+
+        file.write_all(self.ca_cert.0.pem().as_bytes())?;
+        file.write_all(self.server_cert.0.pem().as_bytes())?;
+        file.write_all(self.client_cert.0.pem().as_bytes())?;
+
+        Ok(())
+    }
     pub fn server_config(&self) -> Arc<ServerConfig> {
         let mut server_config = ServerConfig::builder()
             .with_no_client_auth()

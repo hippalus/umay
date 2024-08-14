@@ -1,0 +1,18 @@
+worker_threads = 4
+close_timeout = 30
+exit_timeout = 30
+shutdown_grace_period = 60 # in seconds
+
+
+[[services]]
+name = "localhost"
+port = 9994
+cert_path = "/Users/hakanisler/Workspace/Github/hippalus/umay/.certs/server.crt"
+key_path = "/Users/hakanisler/Workspace/Github/hippalus/umay/.certs/server.key"
+chain_path = "/Users/hakanisler/Workspace/Github/hippalus/umay/.certs/ca-chain.pem"
+upstream_host = "localhost"
+upstream_port = 1994
+discovery_type = "dns"
+discovery_refresh_interval = 300
+load_balancer_selection = "round_robin"
+

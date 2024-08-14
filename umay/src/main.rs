@@ -1,12 +1,13 @@
 extern crate alloc;
 
-use std::net::SocketAddr;
-
+use crate::app::config::AppConfig;
 use crate::app::server::Server;
+use crate::app::signal;
+use std::sync::Arc;
 use tokio::runtime::Builder;
 use tracing::level_filters::LevelFilter;
+use tracing::{error, info};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
-use crate::tls::pki::TEST_PKI;
 
 #[global_allocator]
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
@@ -18,27 +19,41 @@ mod tls;
 
 fn main() -> anyhow::Result<()> {
     init_logger(LevelFilter::DEBUG);
+    let config = Arc::new(AppConfig::new()?);
 
     let runtime = Builder::new_multi_thread()
         .enable_all()
         .thread_name("umay")
-        .worker_threads(4)
-        .max_blocking_threads(4)
+        .worker_threads(config.worker_threads())
+        .max_blocking_threads(config.worker_threads())
         .build()
         .expect("failed to build runtime!");
+    let _ = runtime.enter();
 
-    let listen_addr: SocketAddr = "0.0.0.0:8883".parse()?;
-    let upstream_host = "localhost".to_string();
-    let upstream_port = 1883;
+    runtime.block_on(async move {
+        let server_result = Server::build(config);
+        let server = match server_result {
+            Ok(server) => server,
+            Err(e) => {
+                error!("Initialization failure: {}", e);
+                std::process::exit(1);
+            }
+        };
 
-    let server = Server::new(
-        listen_addr,
-        upstream_host,
-        upstream_port,
-        TEST_PKI.server_config(),
-    )?;
+        let shutdown_rx = signal::shutdown().await;
 
-    runtime.block_on(server.run())
+        let drain = server.spawn(shutdown_rx).await;
+        match drain {
+            Ok(_) => {
+                info!("Server shutdown successfully");
+            }
+            Err(e) => {
+                error!("Server shutdown failed: {}", e);
+            }
+        }
+    });
+
+    Ok(())
 }
 
 fn init_logger(default_level: LevelFilter) {
