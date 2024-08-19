@@ -58,12 +58,12 @@ impl Store {
         let certified_key = Self::create_certified_key(server_cert, key, intermediates)?;
         let resolver = Arc::new(CertResolver(certified_key));
 
-        let server_cert_verifier = WebPkiServerVerifier::builder(roots.clone()).build()?;
-        let client_cfg = Self::create_client_config(server_cert_verifier.clone(), resolver.clone())?;
+        let cert_verifier = WebPkiServerVerifier::builder(roots.clone()).build()?;
+        let client_cfg = Self::create_client_config(cert_verifier.clone(), resolver.clone())?;
         let server_cfg = Self::create_server_config(&roots, resolver.clone())?;
 
         Ok(Self {
-            server_cert_verifier,
+            server_cert_verifier: cert_verifier,
             server_name,
             client_cfg,
             server_cfg,
@@ -115,9 +115,9 @@ impl Store {
         let mut client_cfg = rustls::ClientConfig::builder()
             .with_webpki_verifier(server_cert_verifier)
             .with_client_cert_resolver(resolver);
-        
+
         client_cfg.resumption = Resumption::disabled();
-        
+
         Ok(Arc::new(client_cfg))
     }
 
