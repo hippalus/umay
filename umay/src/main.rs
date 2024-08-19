@@ -1,5 +1,3 @@
-extern crate alloc;
-
 use crate::app::config::AppConfig;
 use crate::app::server::Server;
 use crate::app::signal;
@@ -19,7 +17,7 @@ mod tls;
 
 fn main() -> anyhow::Result<()> {
     init_logger(LevelFilter::DEBUG);
-    let config = Arc::new(AppConfig::new()?);
+    let config = Arc::new(AppConfig::try_default()?);
 
     let runtime = Builder::new_multi_thread()
         .enable_all()

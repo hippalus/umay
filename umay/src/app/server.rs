@@ -11,7 +11,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot::Receiver;
 use tower::Service;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 pub struct Server {
     proxy_service: ProxyService,
@@ -23,7 +23,16 @@ impl Server {
     pub fn build(config: Arc<AppConfig>) -> Result<Self> {
         let service_config = config.get_first_service_config()?;
 
-        let tls_server = initialize_tls_server(&service_config)?;
+        let server_name = service_config.server_name()?.to_owned();
+        let store = Store::new(
+            server_name.clone(),
+            service_config.roots_ca()?,
+            service_config.cert()?,
+            service_config.key()?,
+            vec![],
+        )?;
+
+        let tls_server = initialize_tls_server(&store)?;
         let load_balancer = initialize_load_balancer(&service_config)?;
 
         let proxy_service = ProxyService::new(tls_server, load_balancer);
@@ -96,15 +105,11 @@ async fn bind_listener(port: u16) -> Result<TcpListener> {
         .await
         .context(format!("Failed to bind to address: {}", listen_addr))
 }
-fn initialize_tls_server(service_config: &ServiceConfig) -> Result<Arc<tls::server::Server>> {
-    let name = service_config.server_name()?.to_owned();
-    let store = Store::new(
-        service_config.key_path(),
-        service_config.cert_path(),
-        service_config.chain_path(),
-    )?;
-
-    Ok(Arc::new(tls::server::Server::new(name, store.server_cfg())))
+fn initialize_tls_server(store: &Store) -> Result<Arc<tls::server::Server>> {
+    Ok(Arc::new(tls::server::Server::new(
+        store.server_name().to_owned(),
+        store.server_cfg(),
+    )))
 }
 
 fn initialize_load_balancer(service_config: &ServiceConfig) -> Result<Arc<LoadBalancer>> {

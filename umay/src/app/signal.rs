@@ -8,8 +8,7 @@ mod imp {
     use tokio::signal::unix;
     use tokio::signal::unix::SignalKind;
     use tokio::sync::oneshot;
-    use tracing::info;
-    use tracing::log::warn;
+    use tracing::{info, warn};
 
     pub(super) async fn shutdown() -> oneshot::Receiver<()> {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();

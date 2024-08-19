@@ -1,9 +1,10 @@
 use anyhow::{anyhow, Context};
 use config::{Environment, File};
 use serde::{Deserialize, Serialize};
-use std::env;
+use std::io::Read;
 use std::net::SocketAddr;
 use std::time::Duration;
+use std::{env, fs};
 use tracing::{info, warn};
 use webpki::types::ServerName;
 
@@ -25,7 +26,7 @@ pub struct ServiceConfig {
     port: u16,
     cert_path: String,
     key_path: String,
-    chain_path: String,
+    ca_path: String,
     upstream_host: String,
     upstream_port: u16,
     discovery_type: String,
@@ -48,16 +49,25 @@ impl ServiceConfig {
         self.port
     }
 
-    pub fn cert_path(&self) -> &str {
-        &self.cert_path
+    pub fn cert(&self) -> anyhow::Result<Vec<u8>> {
+        let mut file = fs::File::open(&self.cert_path)?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
+        Ok(buffer)
     }
 
-    pub fn key_path(&self) -> &str {
-        &self.key_path
+    pub fn key(&self) -> anyhow::Result<Vec<u8>> {
+        let mut file = fs::File::open(&self.key_path)?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
+        Ok(buffer)
     }
 
-    pub fn chain_path(&self) -> &str {
-        &self.chain_path
+    pub fn roots_ca(&self) -> anyhow::Result<Vec<u8>> {
+        let mut file = fs::File::open(&self.ca_path)?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
+        Ok(buffer)
     }
 
     pub fn upstream_host(&self) -> &str {
@@ -79,10 +89,40 @@ impl ServiceConfig {
     pub fn load_balancer_selection(&self) -> &str {
         &self.load_balancer_selection
     }
+
+    pub fn ca_path(&self) -> &str {
+        &self.ca_path
+    }
+
+    pub fn new(
+        name: String,
+        port: u16,
+        cert_path: String,
+        key_path: String,
+        ca_path: String,
+        upstream_host: String,
+        upstream_port: u16,
+        discovery_type: String,
+        discovery_refresh_interval: u64,
+        load_balancer_selection: String,
+    ) -> Self {
+        Self {
+            name,
+            port,
+            cert_path,
+            key_path,
+            ca_path,
+            upstream_host,
+            upstream_port,
+            discovery_type,
+            discovery_refresh_interval,
+            load_balancer_selection,
+        }
+    }
 }
 
 impl AppConfig {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn try_default() -> anyhow::Result<Self> {
         let run_env = AppConfig::get_env_var(
             "RUN_ENV",
             DEFAULT_ENV,
@@ -114,8 +154,56 @@ impl AppConfig {
     }
 
     fn set_env_vars(app_config: &mut Self) -> anyhow::Result<()> {
-        //TODO:
+        if let Ok(worker_threads) = env::var("UMAY_WORKER_THREADS") {
+            app_config.worker_threads = worker_threads.parse()?;
+        }
+        if let Ok(close_timeout) = env::var("UMAY_CLOSE_TIMEOUT") {
+            app_config.close_timeout = close_timeout.parse()?;
+        }
+        if let Ok(exit_timeout) = env::var("UMAY_EXIT_TIMEOUT") {
+            app_config.exit_timeout = exit_timeout.parse()?;
+        }
+        if let Ok(shutdown_grace_period) = env::var("UMAY_SHUTDOWN_GRACE_PERIOD") {
+            app_config.shutdown_grace_period = shutdown_grace_period.parse()?;
+        }
 
+        for (index, service) in app_config.services.iter_mut().enumerate() {
+            let prefix = format!("UMAY_SERVICE_{}_", index);
+            if let Ok(name) = env::var(format!("{}NAME", prefix)) {
+                service.name = name;
+            }
+            if let Ok(port) = env::var(format!("{}PORT", prefix)) {
+                service.port = port.parse()?;
+            }
+            if let Ok(cert_path) = env::var(format!("{}CERT_PATH", prefix)) {
+                service.cert_path = cert_path;
+            }
+            if let Ok(key_path) = env::var(format!("{}KEY_PATH", prefix)) {
+                service.key_path = key_path;
+            }
+            if let Ok(ca_path) = env::var(format!("{}CA_PATH", prefix)) {
+                service.ca_path = ca_path;
+            }
+            if let Ok(upstream_host) = env::var(format!("{}UPSTREAM_HOST", prefix)) {
+                service.upstream_host = upstream_host;
+            }
+            if let Ok(upstream_port) = env::var(format!("{}UPSTREAM_PORT", prefix)) {
+                service.upstream_port = upstream_port.parse()?;
+            }
+            if let Ok(discovery_type) = env::var(format!("{}DISCOVERY_TYPE", prefix)) {
+                service.discovery_type = discovery_type;
+            }
+            if let Ok(discovery_refresh_interval) =
+                env::var(format!("{}DISCOVERY_REFRESH_INTERVAL", prefix))
+            {
+                service.discovery_refresh_interval = discovery_refresh_interval.parse()?;
+            }
+            if let Ok(load_balancer_selection) =
+                env::var(format!("{}LOAD_BALANCER_SELECTION", prefix))
+            {
+                service.load_balancer_selection = load_balancer_selection;
+            }
+        }
         Ok(())
     }
 
@@ -155,5 +243,21 @@ impl AppConfig {
 
     pub fn exit_timeout(&self) -> Duration {
         Duration::from_secs(self.exit_timeout)
+    }
+
+    pub fn new(
+        services: Vec<ServiceConfig>,
+        worker_threads: usize,
+        close_timeout: u64,
+        exit_timeout: u64,
+        shutdown_grace_period: u64,
+    ) -> Self {
+        Self {
+            services,
+            worker_threads,
+            close_timeout,
+            exit_timeout,
+            shutdown_grace_period,
+        }
     }
 }

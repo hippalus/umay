@@ -1,7 +1,8 @@
 use std::net::SocketAddr;
 
-use once_cell::sync::Lazy;
 use rustls::pki_types::ServerName;
+use rustls::RootCertStore;
+use rustls_pemfile::certs;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,11 +10,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio_rustls::TlsConnector;
-use umay::app::config::AppConfig;
+use umay::app::config::{AppConfig, ServiceConfig};
 use umay::app::server::Server;
-use umay::tls::pki::TestPki;
-
-static TEST_PKI: Lazy<Arc<TestPki>> = Lazy::new(|| Arc::new(TestPki::default()));
+use webpki::types::IpAddr;
 
 async fn start_backend(
     addr: SocketAddr,
@@ -55,16 +54,23 @@ async fn start_backend(
     }
     Ok(())
 }
-
 async fn start_client(
     proxy_addr: SocketAddr,
 ) -> anyhow::Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    let ca_cert = include_bytes!("../tests/resources/ca.pem").to_vec();
+
+    let ca_cert = certs(&mut std::io::Cursor::new(ca_cert)).next().unwrap()?;
+
+    let mut roots = RootCertStore::empty();
+    roots.add(ca_cert)?;
+
     let config = rustls::ClientConfig::builder()
-        .with_root_certificates(TEST_PKI.roots.clone())
+        .with_root_certificates(roots)
         .with_no_client_auth();
 
     let connector = TlsConnector::from(Arc::new(config));
-    let domain = ServerName::try_from("localhost")?;
+    let domain =
+        ServerName::try_from("default.default.serviceaccount.identity.umay.cluster.local")?; // Ensure this matches the certificate's CN or SAN
 
     let stream = TcpStream::connect(proxy_addr).await?;
     let stream = connector.connect(domain, stream).await?;
@@ -74,17 +80,13 @@ async fn start_client(
 
 #[tokio::test]
 async fn test_proxy_integration() -> anyhow::Result<()> {
-    std::env::set_var(
-        "CONFIG_BASE_PATH",
-        "/Users/hakanisler/Workspace/Github/hippalus/umay/config/",
-    );
     let upstream_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 1994);
     let proxy_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 9994);
 
     let (backend_shutdown_tx, backend_shutdown_rx) = oneshot::channel();
     let upstream_handle = tokio::spawn(start_backend(upstream_addr, backend_shutdown_rx));
 
-    let config = Arc::new(AppConfig::new()?);
+    let config = test_config();
 
     let server = Server::build(config.clone())?;
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -126,4 +128,23 @@ async fn test_proxy_integration() -> anyhow::Result<()> {
         .expect("Failed to complete upstream_handle");
 
     Ok(())
+}
+
+fn test_config() -> Arc<AppConfig> {
+    let service_config = ServiceConfig::new(
+        "default.default.serviceaccount.identity.umay.cluster.local".to_string(),
+        9994,
+        "tests/resources/default-default-ca/crt.der".to_string(),
+        "tests/resources/default-default-ca/key.pem".to_string(),
+        "tests/resources/ca.pem".to_string(),
+        "localhost".to_string(),
+        1994,
+        "dns".to_string(),
+        100,
+        "round_robin".to_string(),
+    );
+
+    let app_config = AppConfig::new(vec![service_config], 3, 1, 1, 1);
+
+    Arc::new(app_config)
 }

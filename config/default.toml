@@ -5,11 +5,11 @@ shutdown_grace_period = 60 # in seconds
 
 
 [[services]]
-name = "localhost"
+name = "default.default.serviceaccount.identity.umay.cluster.local"
 port = 9994
-cert_path = "/Users/hakanisler/Workspace/Github/hippalus/umay/.certs/server.crt"
-key_path = "/Users/hakanisler/Workspace/Github/hippalus/umay/.certs/server.key"
-chain_path = "/Users/hakanisler/Workspace/Github/hippalus/umay/.certs/ca-chain.pem"
+cert_path = ""
+key_path = ""
+ca_path = ""
 upstream_host = "localhost"
 upstream_port = 1994
 discovery_type = "dns"
