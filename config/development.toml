@@ -13,6 +13,6 @@ ca_path = ""
 upstream_host = "localhost"
 upstream_port = 1994
 discovery_type = "dns"
-discovery_refresh_interval = 300
+discovery_refresh_interval = 60
 load_balancer_selection = "round_robin"
 

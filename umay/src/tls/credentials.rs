@@ -16,16 +16,13 @@ use tracing::debug;
 #[derive(Debug)]
 pub struct Store {
     server_name: ServerName<'static>,
-    server_cert_verifier: Arc<dyn ServerCertVerifier>,
+    server_cert_verifier: Arc<dyn ServerCertVerifier + Send + Sync>,
     client_cfg: Arc<rustls::ClientConfig>,
     server_cfg: Arc<rustls::ServerConfig>,
 }
 
 #[derive(Clone, Debug)]
 struct CertResolver(Arc<CertifiedKey>);
-
-#[derive(Clone)]
-struct Key(Arc<PrivateKeyDer<'static>>);
 
 impl ResolvesClientCert for CertResolver {
     fn resolve(
@@ -57,53 +54,13 @@ impl Store {
     ) -> Result<Self> {
         debug!("Creating new Store instance");
 
-        let mut roots = RootCertStore::empty();
-        let certs = certs(&mut Cursor::new(std::str::from_utf8(roots_pem.as_ref())?))
-            .collect::<std::result::Result<Vec<CertificateDer<'static>>, _>>()?;
-
-        if certs.is_empty() {
-            return Err(anyhow::anyhow!("No certificates found in the chain file"));
-        }
-        roots.add_parsable_certificates(certs.clone());
-        let roots = Arc::new(roots);
-
-        let mut chain = Vec::with_capacity(intermediates.len() + 1);
-        chain.push(CertificateDer::from(server_cert.as_slice()).into_owned());
-        chain.extend(
-            intermediates
-                .into_iter()
-                .map(|der| CertificateDer::from(der.as_slice()).into_owned()),
-        );
-
-        let mut reader = Cursor::new(key);
-        let private_key = private_key(&mut reader)
-            .context("Failed to read private key")?
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("No private key found in key file"))?;
-
-        let signing_key = crypto::aws_lc_rs::sign::any_ecdsa_type(&private_key)?;
-        let certified_key = Arc::new(CertifiedKey::new(chain, signing_key));
+        let roots = Self::create_root_store(&roots_pem)?;
+        let certified_key = Self::create_certified_key(server_cert, key, intermediates)?;
         let resolver = Arc::new(CertResolver(certified_key));
 
         let server_cert_verifier = WebPkiServerVerifier::builder(roots.clone()).build()?;
-
-        let mut client_cfg = rustls::ClientConfig::builder()
-            .with_webpki_verifier(Arc::clone(&server_cert_verifier))
-            .with_client_cert_resolver(resolver.clone());
-        //.with_no_client_auth();
-
-        client_cfg.resumption = Resumption::disabled();
-        let client_cfg = client_cfg.into();
-
-        let client_cert_verifier = WebPkiClientVerifier::builder(roots.clone())
-            .allow_unauthenticated()
-            .build()?;
-
-        let server_cfg = rustls::ServerConfig::builder()
-            .with_client_cert_verifier(client_cert_verifier)
-            .with_cert_resolver(resolver.clone())
-            .into();
+        let client_cfg = Self::create_client_config(server_cert_verifier.clone(), resolver.clone())?;
+        let server_cfg = Self::create_server_config(&roots, resolver.clone())?;
 
         Ok(Self {
             server_cert_verifier,
@@ -111,6 +68,72 @@ impl Store {
             client_cfg,
             server_cfg,
         })
+    }
+
+    fn create_root_store(roots_pem: &[u8]) -> Result<Arc<RootCertStore>> {
+        let mut roots = RootCertStore::empty();
+        let certs = certs(&mut Cursor::new(std::str::from_utf8(roots_pem)?))
+            .collect::<std::result::Result<Vec<CertificateDer<'static>>, _>>()?;
+
+        if certs.is_empty() {
+            return Err(anyhow::anyhow!("No certificates found in the chain file"));
+        }
+        roots.add_parsable_certificates(certs);
+        Ok(Arc::new(roots))
+    }
+
+    fn create_certified_key(
+        server_cert: Vec<u8>,
+        key: Vec<u8>,
+        intermediates: Vec<Vec<u8>>,
+    ) -> Result<Arc<CertifiedKey>> {
+        let mut chain = vec![CertificateDer::from(server_cert.as_slice()).into_owned()];
+        chain.extend(
+            intermediates
+                .into_iter()
+                .map(|der| CertificateDer::from(der.as_slice()).into_owned()),
+        );
+
+        let private_key = Self::extract_private_key(key)?;
+        let signing_key = crypto::aws_lc_rs::sign::any_ecdsa_type(&private_key)?;
+        Ok(Arc::new(CertifiedKey::new(chain, signing_key)))
+    }
+
+    fn extract_private_key(key: Vec<u8>) -> Result<PrivateKeyDer<'static>> {
+        let mut reader = Cursor::new(key);
+        private_key(&mut reader)
+            .context("Failed to read private key")?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("No private key found in key file"))
+    }
+
+    fn create_client_config(
+        server_cert_verifier: Arc<WebPkiServerVerifier>,
+        resolver: Arc<CertResolver>,
+    ) -> Result<Arc<rustls::ClientConfig>> {
+        let mut client_cfg = rustls::ClientConfig::builder()
+            .with_webpki_verifier(server_cert_verifier)
+            .with_client_cert_resolver(resolver);
+        
+        client_cfg.resumption = Resumption::disabled();
+        
+        Ok(Arc::new(client_cfg))
+    }
+
+    fn create_server_config(
+        roots: &Arc<RootCertStore>,
+        resolver: Arc<CertResolver>,
+    ) -> Result<Arc<rustls::ServerConfig>> {
+        let client_cert_verifier = WebPkiClientVerifier::builder(roots.clone())
+            .allow_unauthenticated()
+            .build()?;
+
+        let server_cfg = rustls::ServerConfig::builder()
+            .with_client_cert_verifier(client_cert_verifier)
+            .with_cert_resolver(resolver);
+
+        Ok(Arc::new(server_cfg))
     }
 
     pub fn server_name(&self) -> &ServerName<'static> {

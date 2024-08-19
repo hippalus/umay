@@ -1,7 +1,8 @@
 use crate::app::config::{AppConfig, ServiceConfig};
 use crate::app::metric::Metrics;
 use crate::balance::discovery::{DnsDiscovery, LocalDiscovery, ServiceDiscovery};
-use crate::balance::{Backends, LoadBalancer, Selector};
+use crate::balance::selection::SelectionAlgorithm;
+use crate::balance::{selection, Backends, LoadBalancer};
 use crate::proxy::ProxyService;
 use crate::tls;
 use crate::tls::credentials::Store;
@@ -50,7 +51,7 @@ impl Server {
         let listener = bind_listener(service_config.port()).await?;
 
         info!("Listening on 0.0.0.0:{}", service_config.port());
-        self.start_load_balancer_refresh();
+        self.start_load_balancer_refresh(service_config.discovery_refresh_interval());
 
         loop {
             tokio::select! {
@@ -78,9 +79,8 @@ impl Server {
         Ok(())
     }
 
-    fn start_load_balancer_refresh(&self) {
+    fn start_load_balancer_refresh(&self, refresh_interval: Duration) {
         let lb = self.proxy_service.load_balancer().clone();
-        let refresh_interval = Duration::from_secs(30);
         tokio::spawn(async move {
             lb.start_refresh_task(refresh_interval).await;
         });
@@ -105,6 +105,7 @@ async fn bind_listener(port: u16) -> Result<TcpListener> {
         .await
         .context(format!("Failed to bind to address: {}", listen_addr))
 }
+
 fn initialize_tls_server(store: &Store) -> Result<Arc<tls::server::Server>> {
     Ok(Arc::new(tls::server::Server::new(
         store.server_name().to_owned(),
@@ -137,14 +138,12 @@ fn create_discovery(
     }
 }
 
-fn create_selector(config: &ServiceConfig) -> Result<Selector> {
+fn create_selector(config: &ServiceConfig) -> Result<Arc<dyn SelectionAlgorithm + Send + Sync>> {
     match config.load_balancer_selection() {
-        "round_robin" => Ok(Selector::RoundRobin(Arc::new(tokio::sync::Mutex::new(0)))),
-        "random" => Ok(Selector::Random),
-        "least_connection" => Ok(Selector::LeastConnection(Arc::new(
-            tokio::sync::Mutex::new(Vec::new()),
-        ))),
-        "consistent_hashing" => Ok(Selector::ConsistentHashing),
+        "random" => Ok(Arc::new(selection::Random)),
+        "round_robin" => Ok(Arc::new(selection::RoundRobin::default())),
+        "weighted_round_robin" => Ok(Arc::new(selection::WeightedRoundRobin::default())),
+        "least_connection" => Ok(Arc::new(selection::LeastConnections::default())),
         _ => Err(anyhow!(
             "Invalid load balancer selection: {}",
             config.load_balancer_selection()

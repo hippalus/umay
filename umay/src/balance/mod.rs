@@ -1,16 +1,16 @@
 use crate::balance::discovery::ServiceDiscovery;
+use crate::balance::selection::SelectionAlgorithm;
 use anyhow::Result;
 use arc_swap::ArcSwap;
-use rand::prelude::IteratorRandom;
 use std::collections::BTreeSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tracing::error;
 
 pub mod discovery;
+pub mod selection;
 
 #[derive(Clone, Hash, PartialEq, PartialOrd, Eq, Ord, Debug)]
 pub struct Backend {
@@ -54,23 +54,15 @@ impl Backends {
     }
 }
 
-#[derive(Clone)]
-pub enum Selector {
-    Random,
-    RoundRobin(Arc<Mutex<usize>>),
-    LeastConnection(Arc<Mutex<Vec<(Backend, usize)>>>),
-    ConsistentHashing,
-}
-
 pub struct LoadBalancer {
-    selector: Selector,
+    selection: Arc<dyn SelectionAlgorithm + Send + Sync>,
     backends: Arc<Backends>,
 }
 
 impl LoadBalancer {
-    pub fn new(backends: Backends, selector: Selector) -> Self {
+    pub fn new(backends: Backends, selection: Arc<dyn SelectionAlgorithm>) -> Self {
         Self {
-            selector,
+            selection,
             backends: Arc::new(backends),
         }
     }
@@ -81,34 +73,7 @@ impl LoadBalancer {
             return None;
         }
 
-        match &self.selector {
-            Selector::Random => backends.iter().choose(&mut rand::thread_rng()).cloned(),
-            Selector::RoundRobin(counter) => {
-                let mut index = counter.lock().await;
-                *index = (*index + 1) % backends.len();
-                backends.iter().nth(*index).cloned()
-            }
-            Selector::LeastConnection(connections) => {
-                let mut conns = connections.lock().await;
-                conns.sort_by_key(|(_, count)| *count);
-                conns.first().map(|(backend, _)| backend.clone())
-            }
-            Selector::ConsistentHashing => {
-                if let Some(key) = key {
-                    let hash = {
-                        let mut hasher = DefaultHasher::new();
-                        key.hash(&mut hasher);
-                        hasher.finish()
-                    };
-                    backends
-                        .iter()
-                        .min_by_key(|backend| backend.hash_key() ^ hash)
-                        .cloned()
-                } else {
-                    None
-                }
-            }
-        }
+        self.selection.select(&backends).await
     }
 
     pub async fn start_refresh_task(self: Arc<Self>, duration: Duration) {

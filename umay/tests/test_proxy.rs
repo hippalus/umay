@@ -12,7 +12,6 @@ use tokio::sync::oneshot;
 use tokio_rustls::TlsConnector;
 use umay::app::config::{AppConfig, ServiceConfig};
 use umay::app::server::Server;
-use webpki::types::IpAddr;
 
 async fn start_backend(
     addr: SocketAddr,

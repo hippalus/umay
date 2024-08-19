@@ -5,7 +5,7 @@ use std::io::Read;
 use std::net::SocketAddr;
 use std::time::Duration;
 use std::{env, fs};
-use tracing::{info, warn};
+use tracing::{debug, warn};
 use webpki::types::ServerName;
 
 const CONFIG_BASE_PATH: &str = "config/";
@@ -82,8 +82,8 @@ impl ServiceConfig {
         &self.discovery_type
     }
 
-    pub fn discovery_refresh_interval(&self) -> u64 {
-        self.discovery_refresh_interval
+    pub fn discovery_refresh_interval(&self) -> Duration {
+        Duration::from_secs(self.discovery_refresh_interval)
     }
 
     pub fn load_balancer_selection(&self) -> &str {
@@ -142,7 +142,7 @@ impl AppConfig {
 
         AppConfig::set_env_vars(&mut app_config)?;
 
-        info!("Configuration loaded successfully {:?}", app_config);
+        debug!("Configuration loaded successfully {:?}", app_config);
         Ok(app_config)
     }
 
