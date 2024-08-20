@@ -20,11 +20,13 @@ it [here](https://en.wikipedia.org/wiki/Umay).
 Umay can be configured using TOML files and environment variables. See `config.rs` for available options.
 
 ## Quick Start
+
 To quickly run and test Umay using Docker Compose:
 
 - Ensure you have Docker and Docker Compose installed.
 - Clone this repository and navigate to the project directory.
 - Start the services:
+
 ```bash
 docker-compose up --build
 ```
@@ -38,9 +40,11 @@ openssl s_client -connect localhost:9994
 If working correctly, you should see a TLS handshake followed by an echo response from one of the backend servers.
 
 To stop the services:
+
 ```bash
 docker-compose down
 ```
+
 ## Development Status
 
 This project is under active development and is considered experimental. Use in production environments is not
