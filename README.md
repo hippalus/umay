@@ -32,7 +32,7 @@ docker-compose up --build
 Test the proxy:
 
 ```bash
-"Hello, Umay!" | openssl s_client -connect localhost:9994 -ign_eof
+openssl s_client -connect localhost:9994
 ```
 
 If working correctly, you should see a TLS handshake followed by an echo response from one of the backend servers.
