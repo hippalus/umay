@@ -1,5 +1,7 @@
 use anyhow::{anyhow, Context};
 use config::{Environment, File};
+use hickory_resolver::config::{NameServerConfig, ResolverConfig, ResolverOpts};
+use hickory_resolver::Name;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::net::SocketAddr;
@@ -32,6 +34,42 @@ pub struct ServiceConfig {
     discovery_type: String,
     discovery_refresh_interval: u64,
     load_balancer_selection: String,
+    dns_config: Option<DnsConfig>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct DnsConfig {
+    nameservers: Option<Vec<String>>,
+    search: Vec<String>,
+    ndots: Option<usize>,
+}
+
+impl DnsConfig {
+    pub fn into_resolver_config(self) -> anyhow::Result<(ResolverConfig, ResolverOpts)> {
+        let mut config = ResolverConfig::new();
+        let mut opts = ResolverOpts::default();
+
+        if let Some(nameservers) = self.nameservers {
+            for ns in nameservers {
+                let socket_addr: SocketAddr = ns.parse().context("Invalid nameserver address")?;
+                config.add_name_server(NameServerConfig::new(
+                    socket_addr,
+                    hickory_resolver::config::Protocol::Udp,
+                ));
+            }
+        }
+
+        for domain in self.search {
+            let name: Name = domain.parse().context("Invalid search domain")?;
+            config.add_search(name);
+        }
+
+        if let Some(ndts) = self.ndots {
+            opts.ndots = ndts;
+        }
+
+        Ok((config, opts))
+    }
 }
 
 impl ServiceConfig {
@@ -82,6 +120,10 @@ impl ServiceConfig {
         &self.discovery_type
     }
 
+    pub fn dns_config(&self) -> Option<&DnsConfig> {
+        self.dns_config.as_ref()
+    }
+
     pub fn discovery_refresh_interval(&self) -> Duration {
         Duration::from_secs(self.discovery_refresh_interval)
     }
@@ -105,6 +147,7 @@ impl ServiceConfig {
         discovery_type: String,
         discovery_refresh_interval: u64,
         load_balancer_selection: String,
+        dns_config: Option<DnsConfig>,
     ) -> Self {
         Self {
             name,
@@ -117,6 +160,7 @@ impl ServiceConfig {
             discovery_type,
             discovery_refresh_interval,
             load_balancer_selection,
+            dns_config,
         }
     }
 }
@@ -202,6 +246,24 @@ impl AppConfig {
                 env::var(format!("{}LOAD_BALANCER_SELECTION", prefix))
             {
                 service.load_balancer_selection = load_balancer_selection;
+            }
+
+            if let Ok(dns_search) = env::var(format!("{}DNS_SEARCH", prefix)) {
+                let dns_config = service.dns_config.get_or_insert_with(|| DnsConfig {
+                    nameservers: None,
+                    search: Vec::new(),
+                    ndots: None,
+                });
+                dns_config.search = dns_search.split(',').map(String::from).collect();
+
+                if let Ok(dns_nameservers) = env::var(format!("{}DNS_NAMESERVERS", prefix)) {
+                    dns_config.nameservers =
+                        Some(dns_nameservers.split(',').map(String::from).collect());
+                }
+
+                if let Ok(dns_ndots) = env::var(format!("{}DNS_NDOTS", prefix)) {
+                    dns_config.ndots = Some(dns_ndots.parse()?);
+                }
             }
         }
         Ok(())

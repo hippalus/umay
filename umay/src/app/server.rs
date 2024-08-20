@@ -127,6 +127,7 @@ fn create_discovery(
         "dns" => Ok(Box::new(DnsDiscovery::new(
             config.upstream_host().to_owned(),
             config.upstream_port(),
+            config.dns_config().cloned(),
         )?)),
         "local" => Ok(Box::new(LocalDiscovery::with_backends(vec![
             config.upstream_addr()?

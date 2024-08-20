@@ -1,0 +1,76 @@
+
+services:
+  umay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "9994:9994"
+    volumes:
+      - ./config:/app/config
+      - ./certs:/app/certs
+    environment:
+      - UMAY_WORKER_THREADS=4
+      - UMAY_CLOSE_TIMEOUT=10
+      - UMAY_EXIT_TIMEOUT=10
+      - UMAY_SHUTDOWN_GRACE_PERIOD=10
+      - UMAY_SERVICE_0_NAME=default.default.serviceaccount.identity.umay.cluster.local
+      - UMAY_SERVICE_0_PORT=9994
+      - UMAY_SERVICE_0_CERT_PATH=/app/certs/crt.der
+      - UMAY_SERVICE_0_KEY_PATH=/app/certs/key.pem
+      - UMAY_SERVICE_0_CA_PATH=/app/certs/ca.pem
+      - UMAY_SERVICE_0_UPSTREAM_HOST=echo-backend
+      - UMAY_SERVICE_0_UPSTREAM_PORT=1994
+      - UMAY_SERVICE_0_DISCOVERY_TYPE=dns
+      - UMAY_SERVICE_0_DISCOVERY_REFRESH_INTERVAL=60
+      - UMAY_SERVICE_0_LOAD_BALANCER_SELECTION=round_robin
+    dns:
+      - 127.0.0.11
+    depends_on:
+      - echo-backend1
+      - echo-backend2
+      - echo-backend3
+    networks:
+      umay_network:
+        aliases:
+          - default.default.serviceaccount.identity.umay.cluster.local
+
+  echo-backend1:
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile.echo
+    environment:
+      - SERVER_ID=1
+      - PORT=1994
+    networks:
+      umay_network:
+        aliases:
+          - echo-backend
+
+  echo-backend2:
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile.echo
+    environment:
+      - SERVER_ID=2
+      - PORT=1994
+    networks:
+      umay_network:
+        aliases:
+          - echo-backend
+
+  echo-backend3:
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile.echo
+    environment:
+      - SERVER_ID=3
+      - PORT=1994
+    networks:
+      umay_network:
+        aliases:
+          - echo-backend
+
+networks:
+  umay_network:
+    name: umay_network

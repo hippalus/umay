@@ -1,0 +1,10 @@
+**/docker-compose.yaml
+**/.idea
+**/CMakeLists.txt
+**/Dockerfile*
+**/docs
+**/target
+**/.github
+.cargo
+**/README.md
+**/scripts

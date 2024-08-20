@@ -1,3 +1,4 @@
+use crate::app::config::DnsConfig;
 use crate::balance::Backend;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
@@ -6,6 +7,7 @@ use hickory_resolver::TokioAsyncResolver;
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tracing::{debug, info};
 
 #[async_trait]
 pub trait ServiceDiscovery {
@@ -19,9 +21,19 @@ pub struct DnsDiscovery {
 }
 
 impl DnsDiscovery {
-    pub fn new(hostname: String, port: u16) -> anyhow::Result<Self> {
-        let resolver =
-            TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
+    pub fn new(hostname: String, port: u16, dns_config: Option<DnsConfig>) -> anyhow::Result<Self> {
+        let resolver = match dns_config {
+            Some(config) => {
+                info!("Using custom DNS configuration");
+                let cfg = config.into_resolver_config()?;
+                TokioAsyncResolver::tokio(cfg.0, cfg.1)
+            }
+            None => {
+                info!("Using system default DNS configuration");
+                TokioAsyncResolver::tokio_from_system_conf()?
+            }
+        };
+
         Ok(Self {
             resolver,
             hostname,
@@ -34,10 +46,18 @@ impl DnsDiscovery {
 impl ServiceDiscovery for DnsDiscovery {
     async fn discover(&self) -> anyhow::Result<Arc<BTreeSet<Backend>>> {
         let ips = self.resolver.lookup_ip(&self.hostname).await?;
-        let backends = ips
+        debug!("Resolved {} to {:?}", self.hostname, ips);
+
+        let backends: BTreeSet<Backend> = ips
             .iter()
             .map(|ip| Backend::new(SocketAddr::new(ip, self.port), 1))
             .collect();
+
+        if backends.is_empty() {
+            debug!("No backends found for hostname: {}", self.hostname);
+            return Err(anyhow::anyhow!("No backends found"));
+        }
+
         Ok(Arc::new(backends))
     }
 }

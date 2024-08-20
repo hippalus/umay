@@ -141,6 +141,7 @@ fn test_config() -> Arc<AppConfig> {
         "dns".to_string(),
         100,
         "round_robin".to_string(),
+        None,
     );
 
     let app_config = AppConfig::new(vec![service_config], 3, 1, 1, 1);
