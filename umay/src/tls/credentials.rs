@@ -2,7 +2,7 @@ use core::fmt::Debug;
 use std::io::Cursor;
 use std::sync::Arc;
 
-use crate::config::TlsConfig;
+use crate::app::config::TlsConfig;
 use eyre::{Context, Result};
 use rustls::client::{ResolvesClientCert, Resumption};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};

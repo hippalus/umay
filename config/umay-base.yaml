@@ -6,7 +6,7 @@ shutdown_grace_period: 60 # in seconds
 # Stream block for TCP, UDP, WSS, etc.
 stream:
   upstreams:
-    backend_tcp:
+    message_broker:
       load_balancer: round_robin
       service_discovery: dns
       servers:
@@ -47,7 +47,7 @@ stream:
       listen:
         port: 12345
         protocol: tcp
-      proxy_pass: backend_tcp
+      proxy_pass: message_broker
       tls:
         enabled: true
         proxy_tls: on
@@ -60,7 +60,7 @@ stream:
         proxy_tls_protocols:
           - TLSv1.2
           - TLSv1.3
-        proxy_tls_ciphers: "HIGH:!aNULL:!MD5"
+        proxy_tls_ciphers: "TLS13_AES_256_GCM_SHA384"
 
     - name: "dns_server"
       listen:
@@ -85,7 +85,7 @@ stream:
         proxy_tls_protocols:
           - TLSv1.2
           - TLSv1.3
-        proxy_tls_ciphers: "HIGH:!aNULL:!MD5"
+        proxy_tls_ciphers: "TLS13_AES_256_GCM_SHA384"
 
     - name: "single_backend_server"
       listen:
@@ -122,7 +122,7 @@ http:
           protocols:
             - TLSv1.2
             - TLSv1.3
-          ciphers: "HIGH:!aNULL:!MD5"
+          ciphers: "TLS13_AES_256_GCM_SHA384"
       proxy_pass: backend
       location:
         path: "/"
