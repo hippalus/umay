@@ -1,5 +1,5 @@
+use crate::app::config::{Protocol, StreamServer};
 use crate::balance::LoadBalancer;
-use crate::config::{Protocol, StreamServer};
 use crate::tls::server::{Server, TlsTerminator};
 use crate::tls::ServerTls;
 use eyre::Result;

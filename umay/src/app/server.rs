@@ -1,8 +1,11 @@
+use crate::app::config::{
+    LoadBalancer as LoadBalancerConfig, Protocol, ServiceDiscovery as ServiceDiscoveryConfig,
+    UmayConfig, Upstream,
+};
 use crate::app::metric::Metrics;
 use crate::balance::discovery::{DnsDiscovery, LocalDiscovery, ServiceDiscovery};
 use crate::balance::selection::SelectionAlgorithm;
 use crate::balance::{selection, Backends, LoadBalancer};
-use crate::config::{Protocol, UmayConfig, Upstream};
 use crate::proxy::http::HttpProxy;
 use crate::proxy::stream::StreamProxy;
 use crate::tls;
@@ -173,7 +176,7 @@ fn initialize_load_balancer(upstream: &Upstream) -> Result<Arc<LoadBalancer>> {
     let discovery = create_discovery(upstream)?;
     let backends = Backends::new(discovery);
 
-    let balancer = upstream.load_balancer().to_owned();
+    let balancer: LoadBalancerConfig = upstream.load_balancer().to_owned();
     let selector = create_selector(balancer)?;
 
     Ok(Arc::new(LoadBalancer::new(backends, selector)))
@@ -183,7 +186,7 @@ fn create_discovery(
     config: &Upstream,
 ) -> Result<Box<dyn ServiceDiscovery + Send + Sync + 'static>> {
     match config.service_discovery().clone() {
-        crate::config::ServiceDiscovery::Dns => {
+        ServiceDiscoveryConfig::Dns => {
             let us = config
                 .servers()
                 .iter()
@@ -194,7 +197,7 @@ fn create_discovery(
 
             Ok(Box::new(discovery))
         }
-        crate::config::ServiceDiscovery::Local => {
+        ServiceDiscoveryConfig::Local => {
             let mut backends = vec![];
             for us in config.servers() {
                 backends.push(us.to_socket_addrs()?);
@@ -205,15 +208,13 @@ fn create_discovery(
 }
 
 fn create_selector(
-    load_balancer: crate::config::LoadBalancer,
+    load_balancer: LoadBalancerConfig,
 ) -> Result<Arc<dyn SelectionAlgorithm + Send + Sync>> {
     match load_balancer {
-        crate::config::LoadBalancer::Random => Ok(Arc::new(Random)),
-        crate::config::LoadBalancer::RoundRobin => Ok(Arc::new(RoundRobin::default())),
-        crate::config::LoadBalancer::WeightedRoundRobin => {
-            Ok(Arc::new(WeightedRoundRobin::default()))
-        }
-        crate::config::LoadBalancer::LeastConn => Ok(Arc::new(LeastConnections::default())),
-        crate::config::LoadBalancer::IpHash => todo!(),
+        LoadBalancerConfig::Random => Ok(Arc::new(Random)),
+        LoadBalancerConfig::RoundRobin => Ok(Arc::new(RoundRobin::default())),
+        LoadBalancerConfig::WeightedRoundRobin => Ok(Arc::new(WeightedRoundRobin::default())),
+        LoadBalancerConfig::LeastConn => Ok(Arc::new(LeastConnections::default())),
+        LoadBalancerConfig::IpHash => todo!(),
     }
 }

@@ -1,6 +1,6 @@
+use crate::app::config::UmayConfig;
 use crate::app::server::UmayServer;
 use crate::app::signal;
-use crate::config::UmayConfig;
 use eyre::WrapErr;
 use std::sync::Arc;
 use tokio::runtime::Builder;
@@ -15,7 +15,6 @@ static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 mod app;
 mod balance;
-mod config;
 mod proxy;
 mod tls;
 

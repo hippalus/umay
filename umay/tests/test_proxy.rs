@@ -11,11 +11,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{oneshot, watch};
 use tokio_rustls::TlsConnector;
-use umay::app::server::UmayServer;
-use umay::config::{
+use umay::app::config::{
     ListenConfig, LoadBalancer, Protocol, ServiceDiscovery, StreamConfig, StreamServer, TlsConfig,
     UmayConfig, Upstream, UpstreamServer,
 };
+use umay::app::server::UmayServer;
 
 async fn start_backend(
     addr: SocketAddr,

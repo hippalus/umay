@@ -1,40 +1,486 @@
 use config::{Environment, File};
-use eyre::{eyre, Context};
+use eyre::{Context, Result};
 use hickory_resolver::config::{NameServerConfig, ResolverConfig, ResolverOpts};
 use hickory_resolver::Name;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::Read;
 use std::net::SocketAddr;
 use std::time::Duration;
 use std::{env, fs};
-use tracing::{debug, warn};
-use webpki::types::ServerName;
+use tracing::warn;
 
 const CONFIG_BASE_PATH: &str = "config/";
-const DEFAULT_ENV: &str = "development";
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
-pub struct AppConfig {
-    services: Vec<ServiceConfig>,
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UmayConfig {
     worker_threads: usize,
     close_timeout: u64,
     exit_timeout: u64,
     shutdown_grace_period: u64,
+    stream: Option<StreamConfig>, // Optional stream config
+    http: Option<HttpConfig>,     // Optional http config
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
-pub struct ServiceConfig {
-    name: String,
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StreamConfig {
+    upstreams: HashMap<String, Upstream>, // Dynamic upstreams
+    servers: Vec<StreamServer>,
+}
+
+impl StreamConfig {
+    pub fn upstream(&self, key: &str) -> Option<&Upstream> {
+        self.upstreams.get(key)
+    }
+
+    pub fn servers(&self) -> &Vec<StreamServer> {
+        self.servers.as_ref()
+    }
+
+    pub fn new(upstreams: HashMap<String, Upstream>, servers: Vec<StreamServer>) -> Self {
+        Self { upstreams, servers }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Upstream {
+    load_balancer: LoadBalancer,
+    service_discovery: ServiceDiscovery,
+    servers: Vec<UpstreamServer>,
+}
+
+impl Upstream {
+    pub fn service_discovery(&self) -> &ServiceDiscovery {
+        &self.service_discovery
+    }
+
+    pub fn load_balancer(&self) -> &LoadBalancer {
+        &self.load_balancer
+    }
+
+    pub fn servers(&self) -> &Vec<UpstreamServer> {
+        self.servers.as_ref()
+    }
+
+    pub fn new(
+        load_balancer: LoadBalancer,
+        service_discovery: ServiceDiscovery,
+        servers: Vec<UpstreamServer>,
+    ) -> Self {
+        Self {
+            load_balancer,
+            service_discovery,
+            servers,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UpstreamServer {
+    address: String,
     port: u16,
-    cert_path: String,
-    key_path: String,
-    ca_path: String,
-    upstream_host: String,
-    upstream_port: u16,
-    discovery_type: String,
-    discovery_refresh_interval: u64,
-    load_balancer_selection: String,
-    dns_config: Option<DnsConfig>,
+}
+
+impl UpstreamServer {
+    pub fn address(&self) -> &str {
+        &self.address
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn to_socket_addrs(&self) -> Result<SocketAddr> {
+        Ok(SocketAddr::new(self.address.parse()?, self.port))
+    }
+
+    pub fn new(address: String, port: u16) -> Self {
+        Self { address, port }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StreamServer {
+    name: String,
+    listen: ListenConfig,
+    proxy_pass: String, // The proxy_pass is now a string that maps to a dynamic upstream
+    tls: Option<TlsConfig>, // TLS configuration encapsulated here
+}
+
+impl StreamServer {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn listen(&self) -> &ListenConfig {
+        &self.listen
+    }
+
+    pub fn proxy_pass(&self) -> &str {
+        &self.proxy_pass
+    }
+
+    pub fn tls(&self) -> Option<&TlsConfig> {
+        self.tls.as_ref()
+    }
+
+    pub fn new(
+        name: String,
+        listen: ListenConfig,
+        proxy_pass: String,
+        tls: Option<TlsConfig>,
+    ) -> Self {
+        Self {
+            name,
+            listen,
+            proxy_pass,
+            tls,
+        }
+    }
+
+    pub fn set_name(&mut self, name: String) {
+        self.name = name;
+    }
+
+    pub fn set_listen(&mut self, listen: ListenConfig) {
+        self.listen = listen;
+    }
+
+    pub fn set_proxy_pass(&mut self, proxy_pass: String) {
+        self.proxy_pass = proxy_pass;
+    }
+
+    pub fn set_tls(&mut self, tls: Option<TlsConfig>) {
+        self.tls = tls;
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ListenConfig {
+    port: u16,
+    protocol: Protocol,
+}
+
+impl ListenConfig {
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn protocol(&self) -> &Protocol {
+        &self.protocol
+    }
+
+    pub fn new(port: u16, protocol: Protocol) -> Self {
+        Self { port, protocol }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TlsConfig {
+    enabled: bool,
+    proxy_tls_certificate: String,
+    proxy_tls_certificate_key: String,
+    proxy_tls_trusted_certificate: String,
+    proxy_tls_verify: bool,
+    proxy_tls_verify_depth: usize,
+    proxy_tls_session_reuse: bool,
+    proxy_tls_protocols: Vec<String>,
+    proxy_tls_ciphers: String,
+}
+
+impl TlsConfig {
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn proxy_tls_certificate(&self) -> eyre::Result<Vec<u8>> {
+        let mut file = fs::File::open(&self.proxy_tls_certificate)?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
+        Ok(buffer)
+    }
+
+    pub fn proxy_tls_certificate_key(&self) -> eyre::Result<Vec<u8>> {
+        let mut file = fs::File::open(&self.proxy_tls_certificate_key)?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
+        Ok(buffer)
+    }
+
+    pub fn proxy_tls_trusted_certificate(&self) -> eyre::Result<Vec<u8>> {
+        let mut file = fs::File::open(&self.proxy_tls_trusted_certificate)?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
+        Ok(buffer)
+    }
+
+    pub fn proxy_tls_verify(&self) -> bool {
+        self.proxy_tls_verify
+    }
+
+    pub fn proxy_tls_verify_depth(&self) -> usize {
+        self.proxy_tls_verify_depth
+    }
+
+    pub fn proxy_tls_session_reuse(&self) -> bool {
+        self.proxy_tls_session_reuse
+    }
+
+    pub fn proxy_tls_protocols(&self) -> &Vec<String> {
+        &self.proxy_tls_protocols
+    }
+
+    pub fn proxy_tls_ciphers(&self) -> &str {
+        &self.proxy_tls_ciphers
+    }
+
+    pub fn new(
+        enabled: bool,
+        proxy_tls_certificate: String,
+        proxy_tls_certificate_key: String,
+        proxy_tls_trusted_certificate: String,
+        proxy_tls_verify: bool,
+        proxy_tls_verify_depth: usize,
+        proxy_tls_session_reuse: bool,
+        proxy_tls_protocols: Vec<String>,
+        proxy_tls_ciphers: String,
+    ) -> Self {
+        Self {
+            enabled,
+            proxy_tls_certificate,
+            proxy_tls_certificate_key,
+            proxy_tls_trusted_certificate,
+            proxy_tls_verify,
+            proxy_tls_verify_depth,
+            proxy_tls_session_reuse,
+            proxy_tls_protocols,
+            proxy_tls_ciphers,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct HttpConfig {
+    upstreams: HashMap<String, Upstream>, // Dynamic upstreams
+    servers: Vec<HttpServer>,
+}
+
+impl HttpConfig {
+    pub fn upstreams(&self) -> &HashMap<String, Upstream> {
+        &self.upstreams
+    }
+
+    pub fn servers(&self) -> &Vec<HttpServer> {
+        &self.servers
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct HttpServer {
+    name: String,
+    listen: ListenConfig,
+    tls: Option<TlsConfig>, // TLS configuration encapsulated here
+    proxy_pass: String,     // Maps to the dynamic upstream in the HashMap
+    location: LocationConfig,
+    proxy_http_version: String,
+    proxy_set_header: String,
+    keepalive_timeout: usize,
+}
+
+impl HttpServer {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn listen(&self) -> &ListenConfig {
+        &self.listen
+    }
+
+    pub fn tls(&self) -> Option<&TlsConfig> {
+        self.tls.as_ref()
+    }
+
+    pub fn proxy_pass(&self) -> &str {
+        &self.proxy_pass
+    }
+
+    pub fn location(&self) -> &LocationConfig {
+        &self.location
+    }
+
+    pub fn proxy_http_version(&self) -> &str {
+        &self.proxy_http_version
+    }
+
+    pub fn proxy_set_header(&self) -> &str {
+        &self.proxy_set_header
+    }
+
+    pub fn keepalive_timeout(&self) -> usize {
+        self.keepalive_timeout
+    }
+
+    pub fn set_name(&mut self, name: String) {
+        self.name = name;
+    }
+
+    pub fn set_listen(&mut self, listen: ListenConfig) {
+        self.listen = listen;
+    }
+
+    pub fn set_tls(&mut self, tls: Option<TlsConfig>) {
+        self.tls = tls;
+    }
+
+    pub fn set_proxy_pass(&mut self, proxy_pass: String) {
+        self.proxy_pass = proxy_pass;
+    }
+
+    pub fn set_location(&mut self, location: LocationConfig) {
+        self.location = location;
+    }
+
+    pub fn set_proxy_http_version(&mut self, proxy_http_version: String) {
+        self.proxy_http_version = proxy_http_version;
+    }
+
+    pub fn set_proxy_set_header(&mut self, proxy_set_header: String) {
+        self.proxy_set_header = proxy_set_header;
+    }
+
+    pub fn set_keepalive_timeout(&mut self, keepalive_timeout: usize) {
+        self.keepalive_timeout = keepalive_timeout;
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LocationConfig {
+    path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum Protocol {
+    Tcp,
+    Udp,
+    Wss,
+    Https,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadBalancer {
+    RoundRobin,
+    LeastConn,
+    Random,
+    IpHash,
+    WeightedRoundRobin,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceDiscovery {
+    Dns,
+    Local,
+}
+
+impl UmayConfig {
+    pub fn load() -> Result<Self> {
+        let config_path = Self::get_env_var(
+            "CONFIG_BASE_PATH",
+            CONFIG_BASE_PATH,
+            "CONFIG_BASE_PATH not set. Using the default environment: {}",
+        );
+
+        let config = Self::get_config(&config_path)?;
+
+        let config: UmayConfig = config
+            .try_deserialize::<Self>()
+            .wrap_err("Failed to load configuration")?;
+
+        config.validate()?;
+
+        Ok(config)
+    }
+
+    fn get_config(config_path: &str) -> eyre::Result<config::Config> {
+        config::Config::builder()
+            .add_source(File::with_name(&format!("{}umay.yaml", config_path)))
+            .add_source(Environment::with_prefix("UMAY").separator("_"))
+            .build()
+            .wrap_err("Failed to build configuration")
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.stream.is_none() && self.http.is_none() {
+            eyre::bail!("At least one of 'stream' or 'http' configurations must be present.");
+        }
+        Ok(())
+    }
+
+    pub fn get_upstream(&self, name: &str) -> Option<&Upstream> {
+        if let Some(stream) = &self.stream {
+            if let Some(upstream) = stream.upstreams.get(name) {
+                return Some(upstream);
+            }
+        }
+
+        if let Some(http) = &self.http {
+            if let Some(upstream) = http.upstreams.get(name) {
+                return Some(upstream);
+            }
+        }
+        None
+    }
+
+    fn get_env_var(var: &str, default: &str, warning: &str) -> String {
+        env::var(var).unwrap_or_else(|_| {
+            warn!("{}", warning);
+            default.to_string()
+        })
+    }
+
+    pub fn worker_threads(&self) -> usize {
+        self.worker_threads
+    }
+
+    pub fn close_timeout(&self) -> Duration {
+        Duration::from_secs(self.close_timeout)
+    }
+
+    pub fn exit_timeout(&self) -> Duration {
+        Duration::from_secs(self.exit_timeout)
+    }
+
+    pub fn shutdown_grace_period(&self) -> Duration {
+        Duration::from_secs(self.shutdown_grace_period)
+    }
+
+    pub fn stream(&self) -> Option<&StreamConfig> {
+        self.stream.as_ref()
+    }
+
+    pub fn http(&self) -> Option<&HttpConfig> {
+        self.http.as_ref()
+    }
+
+    pub fn new(
+        worker_threads: usize,
+        close_timeout: u64,
+        exit_timeout: u64,
+        shutdown_grace_period: u64,
+        stream: Option<StreamConfig>,
+        http: Option<HttpConfig>,
+    ) -> Self {
+        Self {
+            worker_threads,
+            close_timeout,
+            exit_timeout,
+            shutdown_grace_period,
+            stream,
+            http,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -69,257 +515,5 @@ impl DnsConfig {
         }
 
         Ok((config, opts))
-    }
-}
-
-impl ServiceConfig {
-    pub fn server_name(&self) -> eyre::Result<ServerName> {
-        ServerName::try_from(self.name.as_str()).wrap_err("Invalid server name")
-    }
-
-    pub fn upstream_addr(&self) -> eyre::Result<SocketAddr> {
-        format!("{}:{}", self.upstream_host, self.upstream_port)
-            .parse()
-            .wrap_err("Invalid upstream address")
-    }
-
-    pub fn port(&self) -> u16 {
-        self.port
-    }
-
-    pub fn cert(&self) -> eyre::Result<Vec<u8>> {
-        let mut file = fs::File::open(&self.cert_path)?;
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer)?;
-        Ok(buffer)
-    }
-
-    pub fn key(&self) -> eyre::Result<Vec<u8>> {
-        let mut file = fs::File::open(&self.key_path)?;
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer)?;
-        Ok(buffer)
-    }
-
-    pub fn roots_ca(&self) -> eyre::Result<Vec<u8>> {
-        let mut file = fs::File::open(&self.ca_path)?;
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer)?;
-        Ok(buffer)
-    }
-
-    pub fn upstream_host(&self) -> &str {
-        &self.upstream_host
-    }
-
-    pub fn upstream_port(&self) -> u16 {
-        self.upstream_port
-    }
-
-    pub fn discovery_type(&self) -> &str {
-        &self.discovery_type
-    }
-
-    pub fn dns_config(&self) -> Option<&DnsConfig> {
-        self.dns_config.as_ref()
-    }
-
-    pub fn discovery_refresh_interval(&self) -> Duration {
-        Duration::from_secs(self.discovery_refresh_interval)
-    }
-
-    pub fn load_balancer_selection(&self) -> &str {
-        &self.load_balancer_selection
-    }
-
-    pub fn ca_path(&self) -> &str {
-        &self.ca_path
-    }
-
-    pub fn new(
-        name: String,
-        port: u16,
-        cert_path: String,
-        key_path: String,
-        ca_path: String,
-        upstream_host: String,
-        upstream_port: u16,
-        discovery_type: String,
-        discovery_refresh_interval: u64,
-        load_balancer_selection: String,
-        dns_config: Option<DnsConfig>,
-    ) -> Self {
-        Self {
-            name,
-            port,
-            cert_path,
-            key_path,
-            ca_path,
-            upstream_host,
-            upstream_port,
-            discovery_type,
-            discovery_refresh_interval,
-            load_balancer_selection,
-            dns_config,
-        }
-    }
-}
-
-impl AppConfig {
-    pub fn try_default() -> eyre::Result<Self> {
-        let run_env = AppConfig::get_env_var(
-            "RUN_ENV",
-            DEFAULT_ENV,
-            "RUN_ENV not set. Using the default environment: {}",
-        );
-        let config_path = AppConfig::get_env_var(
-            "CONFIG_BASE_PATH",
-            CONFIG_BASE_PATH,
-            "CONFIG_BASE_PATH not set. Using the default environment: {}",
-        );
-
-        let config = AppConfig::get_config(&run_env, &config_path)?;
-
-        let mut app_config = config
-            .try_deserialize::<Self>()
-            .wrap_err("Failed to load configuration")?;
-
-        AppConfig::set_env_vars(&mut app_config)?;
-
-        debug!("Configuration loaded successfully {:?}", app_config);
-        Ok(app_config)
-    }
-
-    pub fn get_first_service_config(&self) -> eyre::Result<ServiceConfig> {
-        self.services
-            .first()
-            .cloned()
-            .ok_or_else(|| eyre!("No services configured"))
-    }
-
-    fn set_env_vars(app_config: &mut Self) -> eyre::Result<()> {
-        if let Ok(worker_threads) = env::var("UMAY_WORKER_THREADS") {
-            app_config.worker_threads = worker_threads.parse()?;
-        }
-        if let Ok(close_timeout) = env::var("UMAY_CLOSE_TIMEOUT") {
-            app_config.close_timeout = close_timeout.parse()?;
-        }
-        if let Ok(exit_timeout) = env::var("UMAY_EXIT_TIMEOUT") {
-            app_config.exit_timeout = exit_timeout.parse()?;
-        }
-        if let Ok(shutdown_grace_period) = env::var("UMAY_SHUTDOWN_GRACE_PERIOD") {
-            app_config.shutdown_grace_period = shutdown_grace_period.parse()?;
-        }
-
-        for (index, service) in app_config.services.iter_mut().enumerate() {
-            let prefix = format!("UMAY_SERVICE_{}_", index);
-            if let Ok(name) = env::var(format!("{}NAME", prefix)) {
-                service.name = name;
-            }
-            if let Ok(port) = env::var(format!("{}PORT", prefix)) {
-                service.port = port.parse()?;
-            }
-            if let Ok(cert_path) = env::var(format!("{}CERT_PATH", prefix)) {
-                service.cert_path = cert_path;
-            }
-            if let Ok(key_path) = env::var(format!("{}KEY_PATH", prefix)) {
-                service.key_path = key_path;
-            }
-            if let Ok(ca_path) = env::var(format!("{}CA_PATH", prefix)) {
-                service.ca_path = ca_path;
-            }
-            if let Ok(upstream_host) = env::var(format!("{}UPSTREAM_HOST", prefix)) {
-                service.upstream_host = upstream_host;
-            }
-            if let Ok(upstream_port) = env::var(format!("{}UPSTREAM_PORT", prefix)) {
-                service.upstream_port = upstream_port.parse()?;
-            }
-            if let Ok(discovery_type) = env::var(format!("{}DISCOVERY_TYPE", prefix)) {
-                service.discovery_type = discovery_type;
-            }
-            if let Ok(discovery_refresh_interval) =
-                env::var(format!("{}DISCOVERY_REFRESH_INTERVAL", prefix))
-            {
-                service.discovery_refresh_interval = discovery_refresh_interval.parse()?;
-            }
-            if let Ok(load_balancer_selection) =
-                env::var(format!("{}LOAD_BALANCER_SELECTION", prefix))
-            {
-                service.load_balancer_selection = load_balancer_selection;
-            }
-
-            if let Ok(dns_search) = env::var(format!("{}DNS_SEARCH", prefix)) {
-                let dns_config = service.dns_config.get_or_insert_with(|| DnsConfig {
-                    nameservers: None,
-                    search: Vec::new(),
-                    ndots: None,
-                });
-                dns_config.search = dns_search.split(',').map(String::from).collect();
-
-                if let Ok(dns_nameservers) = env::var(format!("{}DNS_NAMESERVERS", prefix)) {
-                    dns_config.nameservers =
-                        Some(dns_nameservers.split(',').map(String::from).collect());
-                }
-
-                if let Ok(dns_ndots) = env::var(format!("{}DNS_NDOTS", prefix)) {
-                    dns_config.ndots = Some(dns_ndots.parse()?);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn get_env_var(var: &str, default: &str, warning: &str) -> String {
-        env::var(var).unwrap_or_else(|_| {
-            warn!("{}", warning);
-            default.to_string()
-        })
-    }
-
-    fn get_config(run_env: &str, config_path: &str) -> eyre::Result<config::Config> {
-        config::Config::builder()
-            .add_source(File::with_name(&format!("{}default.toml", config_path)))
-            .add_source(
-                File::with_name(&format!("{}{}.toml", config_path, run_env)).required(false),
-            )
-            .add_source(Environment::with_prefix("UMAY").separator("_"))
-            .build()
-            .wrap_err("Failed to build configuration")
-    }
-
-    pub fn services(&self) -> &Vec<ServiceConfig> {
-        &self.services
-    }
-
-    pub fn worker_threads(&self) -> usize {
-        self.worker_threads
-    }
-
-    pub fn shutdown_grace_period(&self) -> Duration {
-        Duration::from_secs(self.shutdown_grace_period)
-    }
-
-    pub fn close_timeout(&self) -> Duration {
-        Duration::from_secs(self.close_timeout)
-    }
-
-    pub fn exit_timeout(&self) -> Duration {
-        Duration::from_secs(self.exit_timeout)
-    }
-
-    pub fn new(
-        services: Vec<ServiceConfig>,
-        worker_threads: usize,
-        close_timeout: u64,
-        exit_timeout: u64,
-        shutdown_grace_period: u64,
-    ) -> Self {
-        Self {
-            services,
-            worker_threads,
-            close_timeout,
-            exit_timeout,
-            shutdown_grace_period,
-        }
     }
 }

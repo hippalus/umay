@@ -31,4 +31,4 @@ stream:
         proxy_tls_protocols:
           - TLSv1.2
           - TLSv1.3
-        proxy_tls_ciphers: "HIGH:!aNULL:!MD5"
+        proxy_tls_ciphers: "TLS13_AES_256_GCM_SHA384"
