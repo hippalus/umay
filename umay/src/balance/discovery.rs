@@ -11,7 +11,7 @@ use tracing::{debug, info};
 
 #[async_trait]
 pub trait ServiceDiscovery {
-    async fn discover(&self) -> anyhow::Result<Arc<BTreeSet<Backend>>>;
+    async fn discover(&self) -> eyre::Result<Arc<BTreeSet<Backend>>>;
 }
 
 pub struct DnsDiscovery {
@@ -21,7 +21,7 @@ pub struct DnsDiscovery {
 }
 
 impl DnsDiscovery {
-    pub fn new(hostname: String, port: u16, dns_config: Option<DnsConfig>) -> anyhow::Result<Self> {
+    pub fn new(hostname: String, port: u16, dns_config: Option<DnsConfig>) -> eyre::Result<Self> {
         let resolver = match dns_config {
             Some(config) => {
                 info!("Using custom DNS configuration");
@@ -44,7 +44,7 @@ impl DnsDiscovery {
 
 #[async_trait]
 impl ServiceDiscovery for DnsDiscovery {
-    async fn discover(&self) -> anyhow::Result<Arc<BTreeSet<Backend>>> {
+    async fn discover(&self) -> eyre::Result<Arc<BTreeSet<Backend>>> {
         let ips = self.resolver.lookup_ip(&self.hostname).await?;
         debug!("Resolved {} to {:?}", self.hostname, ips);
 
@@ -55,7 +55,7 @@ impl ServiceDiscovery for DnsDiscovery {
 
         if backends.is_empty() {
             debug!("No backends found for hostname: {}", self.hostname);
-            return Err(anyhow::anyhow!("No backends found"));
+            return Err(eyre::eyre!("No backends found"));
         }
 
         Ok(Arc::new(backends))
@@ -116,7 +116,7 @@ impl LocalDiscovery {
 
 #[async_trait]
 impl ServiceDiscovery for LocalDiscovery {
-    async fn discover(&self) -> anyhow::Result<Arc<BTreeSet<Backend>>> {
+    async fn discover(&self) -> eyre::Result<Arc<BTreeSet<Backend>>> {
         Ok(self.backends.load_full())
     }
 }

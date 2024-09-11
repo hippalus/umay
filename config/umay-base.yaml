@@ -1,0 +1,131 @@
+worker_threads: 4
+close_timeout: 30
+exit_timeout: 30
+shutdown_grace_period: 60 # in seconds
+
+# Stream block for TCP, UDP, WSS, etc.
+stream:
+  upstreams:
+    backend_tcp:
+      load_balancer: round_robin
+      service_discovery: dns
+      servers:
+        - address: "backend1.example.com"
+          port: 12345
+        - address: "backend2.example.com"
+          port: 12345
+        - address: "backend3.example.com"
+          port: 12345
+    single_backend:
+      load_balancer: round_robin
+      service_discovery: dns
+      servers:
+        - address: "backend1.example.com"
+          port: 12345
+    dns_servers:
+      load_balancer: least_conn
+      service_discovery: dns
+      servers:
+        - address: "192.168.136.130"
+          port: 53
+        - address: "192.168.136.131"
+          port: 53
+        - address: "192.168.136.132"
+          port: 53
+
+    backend_wss:
+      load_balancer: round_robin
+      service_discovery: dns
+      servers:
+        - address: "wss_backend1.example.com"
+          port: 443  # WSS runs over HTTPS (TLS)
+        - address: "wss_backend2.example.com"
+          port: 443
+
+  servers:
+    - name: "secure_tcp_server"
+      listen:
+        port: 12345
+        protocol: tcp
+      proxy_pass: backend_tcp
+      tls:
+        enabled: true
+        proxy_tls: on
+        proxy_tls_certificate: "/etc/tls/certs/backend.crt"
+        proxy_tls_certificate_key: "/etc/tls/certs/backend.key"
+        proxy_tls_trusted_certificate: "/etc/tls/certs/trusted_ca_cert.crt"
+        proxy_tls_verify: on
+        proxy_tls_verify_depth: 2
+        proxy_tls_session_reuse: on
+        proxy_tls_protocols:
+          - TLSv1.2
+          - TLSv1.3
+        proxy_tls_ciphers: "HIGH:!aNULL:!MD5"
+
+    - name: "dns_server"
+      listen:
+        port: 53
+        protocol: udp
+      proxy_pass: dns_servers
+
+    - name: "secure_wss_server"
+      listen:
+        port: 8443
+        protocol: wss  # WebSocket Secure over TLS
+      proxy_pass: backend_wss
+      tls:
+        enabled: true
+        proxy_tls: on
+        proxy_tls_certificate: "/etc/tls/certs/wss_backend.crt"
+        proxy_tls_certificate_key: "/etc/tls/certs/wss_backend.key"
+        proxy_tls_trusted_certificate: "/etc/tls/certs/trusted_ca_cert.crt"
+        proxy_tls_verify: on
+        proxy_tls_verify_depth: 2
+        proxy_tls_session_reuse: on
+        proxy_tls_protocols:
+          - TLSv1.2
+          - TLSv1.3
+        proxy_tls_ciphers: "HIGH:!aNULL:!MD5"
+
+    - name: "single_backend_server"
+      listen:
+        port: 12346
+        protocol: tcp
+      proxy_pass: single_backend
+
+
+# HTTP block for securing HTTP traffic and TLS termination
+http:
+  upstreams:
+    backend:
+      load_balancer: round_robin
+      service_discovery: dns
+      servers:
+        - address: "backend1.example.com"
+          port: 443  # HTTPS for upstream
+        - address: "backend2.example.com"
+          port: 443  # HTTPS for upstream
+        - address: "192.0.0.1"
+          port: 443
+          backup: true
+
+  servers:
+    - name: "backend_server"
+      listen:
+        port: 443
+        protocol: https
+        tls:
+          enabled: true
+          certificate: "/etc/tls/company.com.crt"
+          certificate_key: "/etc/tls/company.com.key"
+          proxy_tls_trusted_certificate: "/etc/trusted_ca_cert.crt"
+          protocols:
+            - TLSv1.2
+            - TLSv1.3
+          ciphers: "HIGH:!aNULL:!MD5"
+      proxy_pass: backend
+      location:
+        path: "/"
+      proxy_http_version: "1.1"
+      proxy_set_header: "Connection: ''"
+      keepalive_timeout: 70

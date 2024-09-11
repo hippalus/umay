@@ -32,7 +32,7 @@ hickory-resolver = "0.24"
 once_cell = "1.19"
 jemallocator = "0.5"
 tracing = "0.1"
-anyhow = "1.0.86"
+eyre = "0.6.12"
 thiserror = "1.0"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 arc-swap = "1.7.1"
@@ -41,6 +41,9 @@ tokio-tungstenite = "0.23.1"
 config = "0.14.0"
 drain = "0.1.2"
 base64 = "0.22.1"
+tokio-tower = "0.7.0-rc4"
+chrono = "0.4.38"
+
 
 [lib]
 name = "umay"

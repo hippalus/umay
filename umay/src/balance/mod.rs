@@ -1,12 +1,12 @@
 use crate::balance::discovery::ServiceDiscovery;
 use crate::balance::selection::SelectionAlgorithm;
-use anyhow::Result;
 use arc_swap::ArcSwap;
 use std::collections::BTreeSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::task::JoinHandle;
 use tracing::error;
 
 pub mod discovery;
@@ -43,7 +43,7 @@ impl Backends {
         }
     }
 
-    pub async fn refresh(&self) -> Result<()> {
+    pub async fn refresh(&self) -> eyre::Result<()> {
         let new_backends = self.discovery.discover().await?;
         self.backends.store(new_backends);
         Ok(())
@@ -76,13 +76,15 @@ impl LoadBalancer {
         self.selection.select(&backends).await
     }
 
-    pub async fn start_refresh_task(self: Arc<Self>, duration: Duration) {
-        let mut ticker = tokio::time::interval(duration);
-        loop {
-            ticker.tick().await;
-            if let Err(e) = self.backends.refresh().await {
-                error!("Failed to refresh backends: {:?}", e);
+    pub fn start_refresh_task(self: Arc<Self>, duration: Duration) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(duration);
+            loop {
+                ticker.tick().await;
+                if let Err(e) = self.backends.refresh().await {
+                    error!("Failed to refresh backends: {:?}", e);
+                }
             }
-        }
+        })
     }
 }

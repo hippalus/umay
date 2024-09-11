@@ -1,76 +1,139 @@
-use crate::app::config::{AppConfig, ServiceConfig};
 use crate::app::metric::Metrics;
 use crate::balance::discovery::{DnsDiscovery, LocalDiscovery, ServiceDiscovery};
 use crate::balance::selection::SelectionAlgorithm;
 use crate::balance::{selection, Backends, LoadBalancer};
-use crate::proxy::ProxyService;
+use crate::config::{Protocol, UmayConfig, Upstream};
+use crate::proxy::http::HttpProxy;
+use crate::proxy::stream::StreamProxy;
 use crate::tls;
 use crate::tls::credentials::Store;
-use anyhow::{anyhow, Context, Result};
+use eyre::{eyre, Context, ContextCompat, OptionExt, Result};
+use selection::{LeastConnections, Random, RoundRobin, WeightedRoundRobin};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::TcpListener;
-use tokio::sync::oneshot::Receiver;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::watch;
 use tower::Service;
 use tracing::{error, info};
 
-pub struct Server {
-    proxy_service: ProxyService,
-    config: Arc<AppConfig>,
+pub struct UmayServer {
+    stream_proxies: Vec<StreamProxy>,
+    http_proxies: Vec<HttpProxy>,
+    config: Arc<UmayConfig>,
     metrics: Arc<Metrics>,
 }
 
-impl Server {
-    pub fn build(config: Arc<AppConfig>) -> Result<Self> {
-        let service_config = config.get_first_service_config()?;
+impl TryFrom<Arc<UmayConfig>> for UmayServer {
+    type Error = eyre::Error;
 
-        let server_name = service_config.server_name()?.to_owned();
-        let store = Store::new(
-            server_name.clone(),
-            service_config.roots_ca()?,
-            service_config.cert()?,
-            service_config.key()?,
-            vec![],
-        )?;
+    fn try_from(config: Arc<UmayConfig>) -> Result<Self> {
+        let mut stream_proxies = vec![];
 
-        let tls_server = initialize_tls_server(&store)?;
-        let load_balancer = initialize_load_balancer(&service_config)?;
+        if let Some(stream_config) = config.stream() {
+            for stream_server in stream_config.servers() {
+                let tls_config = stream_server
+                    .tls()
+                    .ok_or_eyre("No TLS configuration found")?;
+                let store = Store::try_from(tls_config)?;
+                let tls_server = initialize_tls_server(&store)?;
 
-        let proxy_service = ProxyService::new(tls_server, load_balancer);
+                let upstream = stream_config
+                    .upstream(stream_server.proxy_pass())
+                    .wrap_err("Failed to find upstream for stream server")?;
+                let load_balancer = initialize_load_balancer(upstream)?;
+
+                // Handle different protocols
+                match stream_server.listen().protocol() {
+                    Protocol::Tcp => {
+                        stream_proxies.push(StreamProxy::new(
+                            Arc::new(stream_server.clone()),
+                            tls_server,
+                            load_balancer,
+                        ));
+                    }
+                    Protocol::Udp => {
+                        todo!() // UDP implementation
+                    }
+                    Protocol::Wss => {
+                        todo!() // WSS implementation
+                    }
+                    Protocol::Https => {
+                        todo!() // HTTPS implementation
+                    }
+                }
+            }
+        }
+
+        let http_proxies = vec![]; // For now, since HttpProxy isn't yet initialized
 
         Ok(Self {
-            proxy_service,
+            stream_proxies,
+            http_proxies,
             config,
             metrics: Arc::new(Metrics::new("umay".to_string(), 1.0)),
         })
     }
+}
 
-    pub async fn spawn(self, mut shutdown_rx: Receiver<()>) -> Result<()> {
-        let service_config = self.config.get_first_service_config()?;
+impl UmayServer {
+    pub async fn run(&self, mut shutdown_rx: watch::Receiver<()>) -> Result<()> {
+        for stream_proxy in self.stream_proxies.iter().cloned() {
+            let port = stream_proxy.port();
+            stream_proxy
+                .load_balancer()
+                .start_refresh_task(Duration::from_secs(30));
 
-        let listener = bind_listener(service_config.port()).await?;
+            let receiver = shutdown_rx.clone();
+            tokio::spawn(async move {
+                if let Err(e) = Self::run_service(stream_proxy, port, receiver).await {
+                    error!("Error running service on port {}: {:?}", port, e);
+                }
+            });
+        }
 
-        info!("Listening on 0.0.0.0:{}", service_config.port());
-        self.start_load_balancer_refresh(service_config.discovery_refresh_interval());
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                info!("Shutdown signal received, starting graceful shutdown.");
+                self.shutdown().await;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn run_service<S>(
+        service: S,
+        port: u16,
+        mut shutdown_rx: watch::Receiver<()>,
+    ) -> Result<()>
+    where
+        S: Service<TcpStream, Response = (), Error = eyre::Error> + Clone + Send + 'static,
+        S::Future: Send + 'static,
+    {
+        let tcp_listener = bind_listener(port).await?;
+        info!("Listening on 0.0.0.0:{}", port);
 
         loop {
             tokio::select! {
-                accept_result = listener.accept() => {
+                accept_result = tcp_listener.accept() => {
                     match accept_result {
                         Ok((socket, _)) => {
-                            let mut service = self.proxy_service.clone();
+                            let mut service_clone = service.clone();
+
                             tokio::spawn(async move {
-                                if let Err(e) = service.call(socket).await {
+                                if let Err(e) = service_clone.call(socket).await {
                                     error!("Error handling connection: {:?}", e);
                                 }
                             });
                         }
-                        Err(e) => error!("Error accepting connection: {:?}", e),
+                        Err(e) => {
+                            error!("Error accepting connection: {:?}", e);
+                        }
                     }
                 }
-                _ = &mut shutdown_rx => {
-                    info!("Shutdown signal received, starting graceful shutdown");
-                    self.shutdown().await;
+
+                _ = shutdown_rx.changed() => {
+                    info!("Shutting down service on port {}", port);
                     break;
                 }
             }
@@ -78,15 +141,7 @@ impl Server {
 
         Ok(())
     }
-
-    fn start_load_balancer_refresh(&self, refresh_interval: Duration) {
-        let lb = self.proxy_service.load_balancer().clone();
-        tokio::spawn(async move {
-            lb.start_refresh_task(refresh_interval).await;
-        });
-    }
-
-    pub async fn shutdown(&self) {
+    async fn shutdown(&self) {
         info!(
             "Graceful shutdown: grace period {:?} starts",
             self.config.shutdown_grace_period()
@@ -101,9 +156,10 @@ impl Server {
 
 async fn bind_listener(port: u16) -> Result<TcpListener> {
     let listen_addr = format!("0.0.0.0:{}", port);
-    TcpListener::bind(&listen_addr)
+    let tcp_listener = TcpListener::bind(&listen_addr)
         .await
-        .context(format!("Failed to bind to address: {}", listen_addr))
+        .wrap_err(format!("Failed to bind to address: {}", listen_addr))?;
+    Ok(tcp_listener)
 }
 
 fn initialize_tls_server(store: &Store) -> Result<Arc<tls::server::Server>> {
@@ -113,41 +169,51 @@ fn initialize_tls_server(store: &Store) -> Result<Arc<tls::server::Server>> {
     )))
 }
 
-fn initialize_load_balancer(service_config: &ServiceConfig) -> Result<Arc<LoadBalancer>> {
-    let discovery = create_discovery(service_config)?;
+fn initialize_load_balancer(upstream: &Upstream) -> Result<Arc<LoadBalancer>> {
+    let discovery = create_discovery(upstream)?;
     let backends = Backends::new(discovery);
-    let selector = create_selector(service_config)?;
+
+    let balancer = upstream.load_balancer().to_owned();
+    let selector = create_selector(balancer)?;
+
     Ok(Arc::new(LoadBalancer::new(backends, selector)))
 }
 
 fn create_discovery(
-    config: &ServiceConfig,
+    config: &Upstream,
 ) -> Result<Box<dyn ServiceDiscovery + Send + Sync + 'static>> {
-    match config.discovery_type() {
-        "dns" => Ok(Box::new(DnsDiscovery::new(
-            config.upstream_host().to_owned(),
-            config.upstream_port(),
-            config.dns_config().cloned(),
-        )?)),
-        "local" => Ok(Box::new(LocalDiscovery::with_backends(vec![
-            config.upstream_addr()?
-        ]))),
-        _ => Err(anyhow!(
-            "Invalid discovery type: {}",
-            config.discovery_type()
-        )),
+    match config.service_discovery().clone() {
+        crate::config::ServiceDiscovery::Dns => {
+            let us = config
+                .servers()
+                .iter()
+                .next()
+                .ok_or_else(|| eyre!("No servers found"))?;
+
+            let discovery = DnsDiscovery::new(us.address().to_owned(), us.port(), None)?;
+
+            Ok(Box::new(discovery))
+        }
+        crate::config::ServiceDiscovery::Local => {
+            let mut backends = vec![];
+            for us in config.servers() {
+                backends.push(us.to_socket_addrs()?);
+            }
+            Ok(Box::new(LocalDiscovery::with_backends(backends)))
+        }
     }
 }
 
-fn create_selector(config: &ServiceConfig) -> Result<Arc<dyn SelectionAlgorithm + Send + Sync>> {
-    match config.load_balancer_selection() {
-        "random" => Ok(Arc::new(selection::Random)),
-        "round_robin" => Ok(Arc::new(selection::RoundRobin::default())),
-        "weighted_round_robin" => Ok(Arc::new(selection::WeightedRoundRobin::default())),
-        "least_connection" => Ok(Arc::new(selection::LeastConnections::default())),
-        _ => Err(anyhow!(
-            "Invalid load balancer selection: {}",
-            config.load_balancer_selection()
-        )),
+fn create_selector(
+    load_balancer: crate::config::LoadBalancer,
+) -> Result<Arc<dyn SelectionAlgorithm + Send + Sync>> {
+    match load_balancer {
+        crate::config::LoadBalancer::Random => Ok(Arc::new(Random)),
+        crate::config::LoadBalancer::RoundRobin => Ok(Arc::new(RoundRobin::default())),
+        crate::config::LoadBalancer::WeightedRoundRobin => {
+            Ok(Arc::new(WeightedRoundRobin::default()))
+        }
+        crate::config::LoadBalancer::LeastConn => Ok(Arc::new(LeastConnections::default())),
+        crate::config::LoadBalancer::IpHash => todo!(),
     }
 }

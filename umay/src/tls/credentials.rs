@@ -2,7 +2,8 @@ use core::fmt::Debug;
 use std::io::Cursor;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use crate::config::TlsConfig;
+use eyre::{Context, Result};
 use rustls::client::{ResolvesClientCert, Resumption};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::server::{ClientHello, ResolvesServerCert, WebPkiClientVerifier};
@@ -44,6 +45,19 @@ impl ResolvesServerCert for CertResolver {
     }
 }
 
+impl TryFrom<&TlsConfig> for Store {
+    type Error = eyre::Error;
+
+    fn try_from(value: &TlsConfig) -> std::result::Result<Self, Self::Error> {
+        Self::new(
+            ServerName::try_from("default.default.serviceaccount.identity.umay.cluster.local")?,
+            value.proxy_tls_trusted_certificate()?,
+            value.proxy_tls_certificate()?,
+            value.proxy_tls_certificate_key()?,
+            vec![],
+        )
+    }
+}
 impl Store {
     pub fn new(
         server_name: ServerName<'static>,
@@ -76,7 +90,7 @@ impl Store {
             .collect::<std::result::Result<Vec<CertificateDer<'static>>, _>>()?;
 
         if certs.is_empty() {
-            return Err(anyhow::anyhow!("No certificates found in the chain file"));
+            return Err(eyre::eyre!("No certificates found in the chain file"));
         }
         roots.add_parsable_certificates(certs);
         Ok(Arc::new(roots))
@@ -102,10 +116,10 @@ impl Store {
     fn extract_private_key(key: Vec<u8>) -> Result<PrivateKeyDer<'static>> {
         let mut reader = Cursor::new(key);
         private_key(&mut reader)
-            .context("Failed to read private key")?
+            .wrap_err("Failed to read private key")?
             .into_iter()
             .next()
-            .ok_or_else(|| anyhow::anyhow!("No private key found in key file"))
+            .ok_or_else(|| eyre::eyre!("No private key found in key file"))
     }
 
     fn create_client_config(

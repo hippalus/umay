@@ -1,5 +1,5 @@
-use anyhow::{anyhow, Context};
 use config::{Environment, File};
+use eyre::{eyre, Context};
 use hickory_resolver::config::{NameServerConfig, ResolverConfig, ResolverOpts};
 use hickory_resolver::Name;
 use serde::{Deserialize, Serialize};
@@ -45,13 +45,13 @@ pub struct DnsConfig {
 }
 
 impl DnsConfig {
-    pub fn into_resolver_config(self) -> anyhow::Result<(ResolverConfig, ResolverOpts)> {
+    pub fn into_resolver_config(self) -> eyre::Result<(ResolverConfig, ResolverOpts)> {
         let mut config = ResolverConfig::new();
         let mut opts = ResolverOpts::default();
 
         if let Some(nameservers) = self.nameservers {
             for ns in nameservers {
-                let socket_addr: SocketAddr = ns.parse().context("Invalid nameserver address")?;
+                let socket_addr: SocketAddr = ns.parse().wrap_err("Invalid nameserver address")?;
                 config.add_name_server(NameServerConfig::new(
                     socket_addr,
                     hickory_resolver::config::Protocol::Udp,
@@ -60,7 +60,7 @@ impl DnsConfig {
         }
 
         for domain in self.search {
-            let name: Name = domain.parse().context("Invalid search domain")?;
+            let name: Name = domain.parse().wrap_err("Invalid search domain")?;
             config.add_search(name);
         }
 
@@ -73,35 +73,35 @@ impl DnsConfig {
 }
 
 impl ServiceConfig {
-    pub fn server_name(&self) -> anyhow::Result<ServerName> {
-        ServerName::try_from(self.name.as_str()).context("Invalid server name")
+    pub fn server_name(&self) -> eyre::Result<ServerName> {
+        ServerName::try_from(self.name.as_str()).wrap_err("Invalid server name")
     }
 
-    pub fn upstream_addr(&self) -> anyhow::Result<SocketAddr> {
+    pub fn upstream_addr(&self) -> eyre::Result<SocketAddr> {
         format!("{}:{}", self.upstream_host, self.upstream_port)
             .parse()
-            .context("Invalid upstream address")
+            .wrap_err("Invalid upstream address")
     }
 
     pub fn port(&self) -> u16 {
         self.port
     }
 
-    pub fn cert(&self) -> anyhow::Result<Vec<u8>> {
+    pub fn cert(&self) -> eyre::Result<Vec<u8>> {
         let mut file = fs::File::open(&self.cert_path)?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)?;
         Ok(buffer)
     }
 
-    pub fn key(&self) -> anyhow::Result<Vec<u8>> {
+    pub fn key(&self) -> eyre::Result<Vec<u8>> {
         let mut file = fs::File::open(&self.key_path)?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)?;
         Ok(buffer)
     }
 
-    pub fn roots_ca(&self) -> anyhow::Result<Vec<u8>> {
+    pub fn roots_ca(&self) -> eyre::Result<Vec<u8>> {
         let mut file = fs::File::open(&self.ca_path)?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)?;
@@ -166,7 +166,7 @@ impl ServiceConfig {
 }
 
 impl AppConfig {
-    pub fn try_default() -> anyhow::Result<Self> {
+    pub fn try_default() -> eyre::Result<Self> {
         let run_env = AppConfig::get_env_var(
             "RUN_ENV",
             DEFAULT_ENV,
@@ -182,7 +182,7 @@ impl AppConfig {
 
         let mut app_config = config
             .try_deserialize::<Self>()
-            .context("Failed to load configuration")?;
+            .wrap_err("Failed to load configuration")?;
 
         AppConfig::set_env_vars(&mut app_config)?;
 
@@ -190,14 +190,14 @@ impl AppConfig {
         Ok(app_config)
     }
 
-    pub fn get_first_service_config(&self) -> anyhow::Result<ServiceConfig> {
+    pub fn get_first_service_config(&self) -> eyre::Result<ServiceConfig> {
         self.services
             .first()
             .cloned()
-            .ok_or_else(|| anyhow!("No services configured"))
+            .ok_or_else(|| eyre!("No services configured"))
     }
 
-    fn set_env_vars(app_config: &mut Self) -> anyhow::Result<()> {
+    fn set_env_vars(app_config: &mut Self) -> eyre::Result<()> {
         if let Ok(worker_threads) = env::var("UMAY_WORKER_THREADS") {
             app_config.worker_threads = worker_threads.parse()?;
         }
@@ -276,7 +276,7 @@ impl AppConfig {
         })
     }
 
-    fn get_config(run_env: &str, config_path: &str) -> anyhow::Result<config::Config> {
+    fn get_config(run_env: &str, config_path: &str) -> eyre::Result<config::Config> {
         config::Config::builder()
             .add_source(File::with_name(&format!("{}default.toml", config_path)))
             .add_source(
@@ -284,7 +284,7 @@ impl AppConfig {
             )
             .add_source(Environment::with_prefix("UMAY").separator("_"))
             .build()
-            .context("Failed to build configuration")
+            .wrap_err("Failed to build configuration")
     }
 
     pub fn services(&self) -> &Vec<ServiceConfig> {
