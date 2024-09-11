@@ -1,4 +1,4 @@
-use tokio::sync::oneshot::Receiver;
+use tokio::sync::watch::Receiver;
 
 pub async fn shutdown() -> Receiver<()> {
     imp::shutdown().await
@@ -7,11 +7,11 @@ pub async fn shutdown() -> Receiver<()> {
 mod imp {
     use tokio::signal::unix;
     use tokio::signal::unix::SignalKind;
-    use tokio::sync::oneshot;
+    use tokio::sync::watch;
     use tracing::{info, warn};
 
-    pub(super) async fn shutdown() -> oneshot::Receiver<()> {
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    pub(super) async fn shutdown() -> watch::Receiver<()> {
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
 
         tokio::spawn(async move {
             let mut sigquit = unix::signal(SignalKind::quit()).unwrap();

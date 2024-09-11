@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use rustls::pki_types::ServerName;
@@ -8,15 +9,18 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio_rustls::TlsConnector;
-use umay::app::config::{AppConfig, ServiceConfig};
-use umay::app::server::Server;
+use umay::app::server::UmayServer;
+use umay::config::{
+    ListenConfig, LoadBalancer, Protocol, ServiceDiscovery, StreamConfig, StreamServer, TlsConfig,
+    UmayConfig, Upstream, UpstreamServer,
+};
 
 async fn start_backend(
     addr: SocketAddr,
     mut shutdown_rx: oneshot::Receiver<()>,
-) -> anyhow::Result<()> {
+) -> eyre::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     loop {
         tokio::select! {
@@ -55,7 +59,7 @@ async fn start_backend(
 }
 async fn start_client(
     proxy_addr: SocketAddr,
-) -> anyhow::Result<tokio_rustls::client::TlsStream<TcpStream>> {
+) -> eyre::Result<tokio_rustls::client::TlsStream<TcpStream>> {
     let ca_cert = include_bytes!("../tests/resources/ca.pem").to_vec();
 
     let ca_cert = certs(&mut std::io::Cursor::new(ca_cert)).next().unwrap()?;
@@ -78,7 +82,7 @@ async fn start_client(
 }
 
 #[tokio::test]
-async fn test_proxy_integration() -> anyhow::Result<()> {
+async fn test_proxy_integration() -> eyre::Result<()> {
     let upstream_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 1994);
     let proxy_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 9994);
 
@@ -87,10 +91,10 @@ async fn test_proxy_integration() -> anyhow::Result<()> {
 
     let config = test_config();
 
-    let server = Server::build(config.clone())?;
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let server: UmayServer = UmayServer::try_from(config.clone())?;
+    let (shutdown_tx, shutdown_rx) = watch::channel(());
     let server_handle = tokio::spawn(async move {
-        if let Err(e) = server.spawn(shutdown_rx).await {
+        if let Err(e) = server.run(shutdown_rx).await {
             tracing::error!("Server error: {:?}", e);
         }
     });
@@ -128,23 +132,47 @@ async fn test_proxy_integration() -> anyhow::Result<()> {
 
     Ok(())
 }
+fn test_config() -> Arc<UmayConfig> {
+    let upstream_server = UpstreamServer::new("localhost".to_string(), 1994);
 
-fn test_config() -> Arc<AppConfig> {
-    let service_config = ServiceConfig::new(
-        "default.default.serviceaccount.identity.umay.cluster.local".to_string(),
-        9994,
-        "tests/resources/default-default-ca/crt.der".to_string(),
-        "tests/resources/default-default-ca/key.pem".to_string(),
-        "tests/resources/ca.pem".to_string(),
-        "localhost".to_string(),
-        1994,
-        "dns".to_string(),
-        100,
-        "round_robin".to_string(),
-        None,
+    let upstream = Upstream::new(
+        LoadBalancer::RoundRobin,
+        ServiceDiscovery::Dns,
+        vec![upstream_server],
     );
 
-    let app_config = AppConfig::new(vec![service_config], 3, 1, 1, 1);
+    let tls_config = TlsConfig::new(
+        true,                                                     // TLS enabled
+        "tests/resources/default-default-ca/crt.der".to_string(), // TLS certificate path
+        "tests/resources/default-default-ca/key.pem".to_string(), // TLS certificate key path
+        "tests/resources/ca.pem".to_string(),                     // Trusted CA certificate
+        true,                                                     // Verify peer certificate
+        2,                                                        // Verify depth
+        true,                                                     // Session reuse enabled
+        vec!["TLSv1.2".to_string(), "TLSv1.3".to_string()],       // Supported TLS protocols
+        "HIGH:!aNULL:!MD5".to_string(),                           // Cipher suites
+    );
 
-    Arc::new(app_config)
+    let stream_server = StreamServer::new(
+        "default.default.serviceaccount.identity.umay.cluster.local".to_string(),
+        ListenConfig::new(9994, Protocol::Tcp),
+        "localhost".to_string(),
+        Some(tls_config),
+    );
+
+    let stream_config = StreamConfig::new(
+        HashMap::from([("localhost".to_string(), upstream)]),
+        vec![stream_server],
+    );
+
+    let umay_config = UmayConfig::new(
+        4,                   // Worker threads
+        1,                   // Close timeout in seconds
+        1,                   // Exit timeout in seconds
+        1,                   // Shutdown grace period in seconds
+        Some(stream_config), // Stream configuration
+        None,                // HTTP configuration (None for now)
+    );
+
+    Arc::new(umay_config)
 }

@@ -85,7 +85,7 @@ impl TestPki {
         roots
     }
 
-    pub fn write_certs_and_keys(&self, directory: &str) -> anyhow::Result<()> {
+    pub fn write_certs_and_keys(&self, directory: &str) -> eyre::Result<()> {
         fs::create_dir_all(directory)?;
 
         self.write_cert_and_key(directory, "ca", &self.ca_cert.0, &self.ca_cert.1)?;
@@ -123,7 +123,7 @@ impl TestPki {
         Ok(())
     }
 
-    fn write_full_chain(&self, directory: &str) -> anyhow::Result<()> {
+    fn write_full_chain(&self, directory: &str) -> eyre::Result<()> {
         let chain_path = Path::new(directory).join("ca-chain.pem");
         let mut file = File::create(chain_path)?;
 

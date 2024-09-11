@@ -8,17 +8,13 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio::net::TcpStream;
 use tokio_rustls::server::TlsStream;
 use tokio_rustls::TlsAcceptor;
 use tower::Service;
 
 #[async_trait]
-pub trait TlsTerminator: Send + Sync {
-    async fn terminate(
-        &self,
-        stream: TcpStream,
-    ) -> anyhow::Result<(ServerTls, TlsStream<TcpStream>)>;
+pub trait TlsTerminator<I>: Send + Sync {
+    async fn terminate(&self, stream: I) -> eyre::Result<(ServerTls, TlsStream<I>)>;
 }
 
 #[derive(Clone)]
@@ -28,11 +24,11 @@ pub struct Server {
 }
 
 #[async_trait]
-impl TlsTerminator for Server {
-    async fn terminate(
-        &self,
-        stream: TcpStream,
-    ) -> anyhow::Result<(ServerTls, TlsStream<TcpStream>)> {
+impl<I> TlsTerminator<I> for Server
+where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Sync + Unpin + 'static,
+{
+    async fn terminate(&self, stream: I) -> eyre::Result<(ServerTls, TlsStream<I>)> {
         let mut server = self.clone();
         server.call(stream).await
     }
@@ -50,10 +46,10 @@ where
     I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Sync + Unpin + 'static,
 {
     type Response = (ServerTls, TlsStream<I>);
-    type Error = anyhow::Error;
+    type Error = eyre::Error;
     type Future = TerminateFuture<I>;
 
-    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<anyhow::Result<(), Self::Error>> {
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<eyre::Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
@@ -74,7 +70,7 @@ impl<I> Future for TerminateFuture<I>
 where
     I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Sync + Unpin + 'static,
 {
-    type Output = anyhow::Result<(ServerTls, TlsStream<I>)>;
+    type Output = eyre::Result<(ServerTls, TlsStream<I>)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
