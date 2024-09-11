@@ -9,15 +9,15 @@ it [here](https://en.wikipedia.org/wiki/Umay).
 ## Features
 
 - TLS termination and proxying
-- Multiple load balancing algorithms (Round Robin, Random, Least Connection, Consistent Hashing)
+- Multiple load balancing algorithms (Round Robin, Random, Least Connection, Ip Hashing)
 - Dynamic backend discovery (DNS-based and local configuration)
-- Configurable via TOML files and environment variables
+- Configurable via YAML files and environment variables 
 - Metrics collection
 - Graceful shutdown
 
 ## Configuration
 
-Umay can be configured using TOML files and environment variables. See `config.rs` for available options.
+Umay can be configured using YAML files and environment variables. See `config.rs` for available options.
 
 ## Quick Start
 
@@ -64,5 +64,5 @@ This project is licensed under the [MIT License](LICENSE).
 We would like to acknowledge the Rust community for their excellent libraries and resources that have greatly supported
 this project. Additionally, inspiration was drawn from projects
 like [linkerd2-proxy](https://github.com/linkerd/linkerd2-proxy), [Pingora by Cloudflare](https://github.com/cloudflare/pingora),
-and [Istio ztunnel](https://github.com/istio/ztunnel).
+ [Istio Ztunnel](https://github.com/istio/ztunnel) and [NGINX](https://github.com/nginx/nginx)
 
