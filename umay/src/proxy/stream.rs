@@ -4,10 +4,14 @@ use crate::tls::server::{Server, TlsTerminator};
 use crate::tls::ServerTls;
 use eyre::Result;
 use futures::future::BoxFuture;
+use futures::SinkExt;
 use std::sync::Arc;
 use std::task::Poll;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_rustls::server::TlsStream;
+use tokio_stream::StreamExt;
+use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream, WebSocketStream};
 use tower::Service;
 use tracing::{debug, error, info};
 
@@ -30,6 +34,7 @@ impl StreamProxy {
         }
     }
 
+    //TODO : make this function as tower Service and implement the call method
     async fn handle_connection<IO>(&self, client_io: IO) -> Result<()>
     where
         IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Sync + Unpin + 'static,
@@ -51,17 +56,28 @@ impl StreamProxy {
             }
         }
 
+        //TODO: make this section tower layer and implement the call method
         match self.load_balancer.select(None).await {
             Some(backend) => {
                 debug!("Selected backend: {:?}", backend);
                 match self.stream_config.listen().protocol().clone() {
                     Protocol::Tcp => {
                         let upstream = TcpStream::connect(backend.addr).await?;
-                        self.proxy(tls_stream, upstream).await?;
+                        // TODO:: make this function as tower Service and implement the call method
+                        self.proxy_tcp(tls_stream, upstream).await?;
                     }
-                    Protocol::Udp => {}
-                    Protocol::Wss => {}
-                    Protocol::Https => {}
+                    Protocol::Ws => {
+                        let client_ws = accept_async(tls_stream).await?;
+                        let upstream_url =
+                            format!("ws://{}:{}", backend.addr.ip(), backend.addr.port());
+                        let (upstream_ws, response) = connect_async(&upstream_url).await?;
+                        debug!("Connected to upstream: {:?}", response);
+                        // TODO:: make this function as tower Service and implement the call method
+                        self.proxy_ws(client_ws, upstream_ws).await?;
+                    }
+                    _ => {
+                        return Err(eyre::eyre!("Unsupported protocol"));
+                    }
                 }
             }
             None => return Err(eyre::eyre!("No backends available")),
@@ -70,7 +86,8 @@ impl StreamProxy {
         Ok(())
     }
 
-    async fn proxy<IO>(&self, client: TlsStream<IO>, server: TcpStream) -> Result<()>
+    // TODO:: make this function as tower Service and implement the call method
+    async fn proxy_tcp<IO>(&self, client: TlsStream<IO>, server: TcpStream) -> Result<()>
     where
         IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Sync + Unpin + 'static,
     {
@@ -94,6 +111,29 @@ impl StreamProxy {
         }
 
         Ok(())
+    }
+
+    // TODO:: make this function as tower Service and implement the call method
+    async fn proxy_ws<IO>(
+        &self,
+        mut client_ws: WebSocketStream<IO>,
+        mut upstream_ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    ) -> Result<()>
+    where
+        IO: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
+    {
+        loop {
+            tokio::select! {
+                Some(client_message) = client_ws.next() => {
+                    let client_message = client_message?;
+                    upstream_ws.send(client_message).await?;
+                }
+                Some(upstream_message) = upstream_ws.next() => {
+                    let upstream_message = upstream_message?;
+                    client_ws.send(upstream_message).await?;
+                }
+            }
+        }
     }
 
     pub fn load_balancer(&self) -> Arc<LoadBalancer> {
