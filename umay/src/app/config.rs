@@ -363,8 +363,8 @@ pub struct LocationConfig {
 pub enum Protocol {
     Tcp,
     Udp,
-    Wss,
-    Https,
+    Ws,
+    Http,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

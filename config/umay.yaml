@@ -12,6 +12,12 @@ stream:
       servers:
         - address: "localhost"
           port: 1994
+    ws_localhost:
+      load_balancer: round_robin
+      service_discovery: dns
+      servers:
+        - address: "localhost"
+          port: 1984
 
   servers:  
     - name: "secure_tcp_server"
@@ -19,6 +25,24 @@ stream:
         port: 9994
         protocol: tcp
       proxy_pass: localhost
+      tls:
+        enabled: true
+        proxy_tls: on
+        proxy_tls_certificate: "/Users/hakanisler/Workspace/Github/hippalus/umay/certs/crt.der"
+        proxy_tls_certificate_key: "/Users/hakanisler/Workspace/Github/hippalus/umay/certs/key.pem"
+        proxy_tls_trusted_certificate: "/Users/hakanisler/Workspace/Github/hippalus/umay/certs/ca.pem"
+        proxy_tls_verify: on
+        proxy_tls_verify_depth: 2
+        proxy_tls_session_reuse: on
+        proxy_tls_protocols:
+          - TLSv1.2
+          - TLSv1.3
+        proxy_tls_ciphers: "TLS13_AES_256_GCM_SHA384"
+    - name: "secure_ws_server"
+      listen:
+        port: 9984
+        protocol: ws
+      proxy_pass: ws_localhost
       tls:
         enabled: true
         proxy_tls: on

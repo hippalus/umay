@@ -37,6 +37,7 @@ pub struct Backends {
 
 impl Backends {
     pub fn new(discovery: Box<dyn ServiceDiscovery + Send + Sync + 'static>) -> Self {
+        //TODO: May call refresh here after initialization
         Self {
             discovery,
             backends: ArcSwap::from_pointee(BTreeSet::new()),

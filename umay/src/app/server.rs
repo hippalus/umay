@@ -11,13 +11,19 @@ use crate::proxy::stream::StreamProxy;
 use crate::tls;
 use crate::tls::credentials::Store;
 use eyre::{eyre, Context, ContextCompat, OptionExt, Result};
+use futures::StreamExt;
 use selection::{LeastConnections, Random, RoundRobin, WeightedRoundRobin};
+use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
+use tokio_stream::wrappers::TcpListenerStream;
+use tokio_stream::Stream;
 use tower::Service;
-use tracing::{error, info};
+use tracing::log::warn;
+use tracing::{debug, error, info};
 
 pub struct UmayServer {
     stream_proxies: Vec<StreamProxy>,
@@ -47,7 +53,7 @@ impl TryFrom<Arc<UmayConfig>> for UmayServer {
 
                 // Handle different protocols
                 match stream_server.listen().protocol() {
-                    Protocol::Tcp => {
+                    Protocol::Tcp | Protocol::Ws => {
                         stream_proxies.push(StreamProxy::new(
                             Arc::new(stream_server.clone()),
                             tls_server,
@@ -57,10 +63,7 @@ impl TryFrom<Arc<UmayConfig>> for UmayServer {
                     Protocol::Udp => {
                         todo!() // UDP implementation
                     }
-                    Protocol::Wss => {
-                        todo!() // WSS implementation
-                    }
-                    Protocol::Https => {
+                    Protocol::Http => {
                         todo!() // HTTPS implementation
                     }
                 }
@@ -110,31 +113,32 @@ impl UmayServer {
         mut shutdown_rx: watch::Receiver<()>,
     ) -> Result<()>
     where
-        S: Service<TcpStream, Response = (), Error = eyre::Error> + Clone + Send + 'static,
+        S: Service<TcpStream, Response=(), Error=eyre::Error> + Clone + Send + 'static,
         S::Future: Send + 'static,
     {
-        let tcp_listener = bind_listener(port).await?;
+        let mut tcp_listener_stream = bind_listener(port).await?;
         info!("Listening on 0.0.0.0:{}", port);
 
         loop {
             tokio::select! {
-                accept_result = tcp_listener.accept() => {
-                    match accept_result {
-                        Ok((socket, _)) => {
+                connection = tcp_listener_stream.next() => {
+                    match connection {
+                       Some(Ok(socket)) => {
                             let mut service_clone = service.clone();
-
                             tokio::spawn(async move {
                                 if let Err(e) = service_clone.call(socket).await {
                                     error!("Error handling connection: {:?}", e);
                                 }
                             });
                         }
-                        Err(e) => {
+                        Some(Err(e)) => {
                             error!("Error accepting connection: {:?}", e);
+                        }
+                        None => {
+                            warn!("No accepting connection");
                         }
                     }
                 }
-
                 _ = shutdown_rx.changed() => {
                     info!("Shutting down service on port {}", port);
                     break;
@@ -157,12 +161,41 @@ impl UmayServer {
     }
 }
 
-async fn bind_listener(port: u16) -> Result<TcpListener> {
+async fn bind_listener(port: u16) -> Result<Pin<Box<dyn Stream<Item=Result<TcpStream>> + Send>>> {
     let listen_addr = format!("0.0.0.0:{}", port);
-    let tcp_listener = TcpListener::bind(&listen_addr)
-        .await
-        .wrap_err(format!("Failed to bind to address: {}", listen_addr))?;
-    Ok(tcp_listener)
+    let tcp_listener = {
+        let std_tcp_listener = std::net::TcpListener::bind(&listen_addr)?;
+        // Ensure non-blocking mode for Tokio
+        std_tcp_listener.set_nonblocking(true)?;
+        TcpListener::from_std(std_tcp_listener)
+            .wrap_err(format!("Failed to bind to address: {}", listen_addr))?
+    };
+
+    let stream = TcpListenerStream::new(tcp_listener).map(|res| {
+        let tcp = res
+            .map_err(|e| eyre!(e))
+            .wrap_err("Failed to accept connection")?;
+
+        super::set_nodelay_or_warn(&tcp);
+        let tcp = super::set_keepalive_or_warn(tcp, None).wrap_err("Failed to set keepalive")?;
+
+        fn ipv4_mapped(orig: SocketAddr) -> SocketAddr {
+            if let SocketAddr::V6(v6) = orig {
+                if let Some(ip) = v6.ip().to_ipv4_mapped() {
+                    return (ip, orig.port()).into();
+                }
+            }
+            orig
+        }
+
+        let client_addr = tcp.peer_addr().wrap_err("Failed to get peer address")?;
+        let client = ipv4_mapped(client_addr);
+        debug!("Accepted connection from {}", client);
+
+        Ok(tcp)
+    });
+
+    Ok(Box::pin(stream))
 }
 
 fn initialize_tls_server(store: &Store) -> Result<Arc<tls::server::Server>> {
