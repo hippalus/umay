@@ -1,11 +1,17 @@
 ---
-name: Title
-about: Briefly describe the main objective of this ticket.
+name: Feature request
+about: Suggest an idea for this project
 title: ''
 labels: ''
 assignees: ''
 
 ---
+
+# [Issue Title]
+
+## **Objective**
+
+[Briefly describe the main objective of this ticket.]
 
 ## **Description**
 
@@ -36,8 +42,4 @@ assignees: ''
 - [ ] Code follows the project's coding standards.
 - [ ] Unit and integration tests are written and passing.
 - [ ] Documentation is updated accordingly.
-- [ ] Feature is tested and verified..
-
-## **Additional Information**
-
-[Add any additional information, references, or links that might be helpful.]
+- [ ] Feature is tested and verified in a staging environment.
